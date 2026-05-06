@@ -1,3 +1,5 @@
+# 임베딩 base url 확인 필요!
+
 # Streamlit 및 기본 라이브러리
 import streamlit as st
 import os
@@ -12,6 +14,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PDFPlumberLoader
 from langchain_community.vectorstores import FAISS
+from langchain_core.prompts import ChatPromptTemplate
 # from langchain_teddynote.prompts import load_prompt
 # from langchain_teddynote import logging
 
@@ -156,8 +159,8 @@ def embed_pdfs_from_data_folder(chunk_size=1000, chunk_overlap=50, search_k=6):
 
     # 단계 4: 임베딩(Embedding) 생성
     embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small",
-        api_key=os.getenv("OPENROUTER_API_KEY"),
+        model="text-embedding-3-large",
+        api_key=os.getenv("LLM_API_KEY"),
         base_url=os.getenv("EMBEDDING_BASE_URL"),
     )
 
@@ -172,10 +175,25 @@ def embed_pdfs_from_data_folder(chunk_size=1000, chunk_overlap=50, search_k=6):
 
 
 # RAG 체인을 생성하는 함수 (검색-생성 파이프라인)
-def create_chain(retriever, model_name="gpt-4.1", response_length=3):
+def create_chain(retriever, model_name="gpt-5", response_length=3):
     """Retrieval-Augmented Generation 체인 생성"""
     # 단계 6: 프롬프트 템플릿 로드
     # prompt = load_prompt("prompts/pdf-rag.yaml", encoding="utf-8")
+    prompt = ChatPromptTemplate.from_template("""
+                당신은 PDF 기반 QA 도우미입니다.
+
+                아래 문맥만 바탕으로 질문에 답하세요.
+                문맥:
+                {context}
+
+                질문:
+                {question}
+
+                답변 길이 레벨:
+                {response_length}
+
+                답변:
+                """)
 
     # 단계 7: OpenAI 언어모델 초기화 (temperature=0으로 일관된 답변 생성)
     llm = ChatOpenAI(
