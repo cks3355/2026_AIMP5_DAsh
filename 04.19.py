@@ -16,6 +16,6 @@ client = AzureOpenAI(
 
 resp = client.chat.completions.create(
     model="gpt-5.4",              # AOAI deployment 이름
-    messages=[{"role": "user", "content": "Multi Agent Architecture 기술에 대해 설명해줘"}],
+    messages=[{"role": "user", "content": "Hello, how are you?"}],
 )
 print(resp.choices[0].message.content)
