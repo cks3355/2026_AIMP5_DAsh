@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import time
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -27,6 +28,12 @@ from typing import Any, Callable, Literal, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+warnings.filterwarnings(
+    "ignore",
+    message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.",
+    category=UserWarning,
+)
 
 try:
     import streamlit as st
@@ -364,7 +371,7 @@ class OracleTermRepository:
     def __init__(self, oracle_url: str) -> None:
         if create_engine is None or text is None:
             raise RuntimeError("SQLAlchemy가 설치되어 있지 않습니다.")
-        self.engine: Engine = create_engine(oracle_url)
+        self.engine = create_engine(oracle_url)
 
     def list_terms(self) -> list[StandardTerm]:
         """Oracle에서 표준용어를 조회합니다."""
@@ -1063,7 +1070,10 @@ def streamlit_context() -> bool:
     if st is None:
         return False
     try:
+        import logging
         from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").disabled = True
         return get_script_run_ctx() is not None
     except Exception:
         return False
