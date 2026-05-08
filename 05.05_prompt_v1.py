@@ -247,7 +247,7 @@ class AppConfig:
         use_mock_data = env_bool("USE_MOCK_DATA", default=not bool(oracle_database_url))
         return cls(
             use_mock_data=use_mock_data,
-            llm_model=os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "gpt-5",
+            llm_model=os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "gpt-5.4",
             embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-large"),
             openai_api_key=openai_api_key,
             openai_base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL"),
