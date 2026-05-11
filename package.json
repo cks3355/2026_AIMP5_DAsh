@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.74.0",
+    "@earendil-works/pi-ai": "^0.74.0"
+  }
+}
