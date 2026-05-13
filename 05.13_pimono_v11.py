@@ -1753,23 +1753,70 @@ def css() -> None:
     st.markdown("""
     <style>
     header[data-testid="stHeader"]{height:0;background:transparent;visibility:hidden}
-    .stApp{background:#f6f7f8;color:#20262d;font-size:.92rem}
-    .block-container{max-width:1760px;padding:.35rem .75rem 1rem}
+    .stApp{background:#f5f5f7;color:#1d1d1f;font-family:"Times New Roman","Malgun Gothic",Times,serif;font-size:.92rem}
+    .block-container{max-width:1760px;padding:.7rem 1.1rem 1.25rem}
     h1,h2,h3,.stMarkdown,.stText,.stTextArea,.stButton,.stCheckbox{font-size:.92rem}
     [data-testid="stMarkdownContainer"] p{font-size:.9rem;line-height:1.55}
-    [data-testid="stTextArea"] textarea{font-size:.9rem;line-height:1.5}
-    div.stButton>button{min-height:2.15rem;border-radius:6px;border:1px solid #337566;font-size:.88rem}
-    .dash-title{font-family:Arial,Helvetica,sans-serif;font-size:2.75rem;font-weight:700;line-height:1;color:#17202a;margin:0 0 .35rem}
-    .dash-lead{font-size:.92rem;line-height:1.6;color:#56616d;border-left:3px solid #337566;padding-left:.8rem;margin-bottom:1.1rem;max-width:980px}
-    .panel-title{font-size:1rem;font-weight:700;margin:.35rem 0 .55rem;color:#20262d}
-    .term-card{background:#ffffff;border:1px solid #d9dee3;border-radius:8px;padding:.75rem;margin-bottom:.55rem}
-    .term-card b{font-size:.94rem}.term-card small{color:#66717d;font-size:.78rem}
-    .rec-name{font-size:1.08rem;font-weight:700;color:#17202a;margin:.05rem 0 .3rem}
-    .rec-reason{font-size:.76rem;line-height:1.45;color:#66717d}
-    .rec-score{font-size:.72rem;color:#7b8792;margin-top:.25rem}
-    .empty-card{background:#ffffff;border:1px dashed #c9d0d6;border-radius:8px;padding:.75rem;color:#66717d;font-size:.88rem}
-    .result-box{background:#ffffff;border:1px solid #d9dee3;border-radius:8px;padding:.8rem;margin-bottom:.75rem}
-    .agent-log{background:#17202a;color:#eef3f5;border-radius:8px;padding:.75rem;font-family:Consolas,monospace;font-size:.74rem;max-height:520px;overflow-y:auto;white-space:pre-wrap}
+    [data-testid="stTextArea"] textarea{
+        background:#ffffff;color:#1d1d1f;border:1px solid #d2d2d7;border-radius:14px;
+        font-family:"Times New Roman","Malgun Gothic",Times,serif;
+        font-size:.9rem;line-height:1.5;box-shadow:0 2px 10px rgba(0,0,0,.04)
+    }
+    div.stButton>button{
+        min-height:2.15rem;border-radius:999px;border:1px solid #0071e3;
+        background:#0071e3;color:#ffffff;
+        font-family:"Times New Roman","Malgun Gothic",Times,serif;
+        font-size:.88rem;font-weight:600;box-shadow:none
+    }
+    div.stButton>button:hover{background:#0077ed;border-color:#0077ed;color:#ffffff}
+    div.stButton>button:disabled{background:#e8e8ed;color:#86868b;border-color:#e8e8ed}
+    .dash-title{
+        font-family:"Times New Roman","Malgun Gothic",Times,serif;
+        font-size:3rem;font-weight:bold;line-height:1;color:#1d1d1f;
+        margin:0 0 .55rem;padding-bottom:.15rem;border-bottom:none;letter-spacing:0
+    }
+    .dash-lead{
+        background:#ffffff;border:1px solid #f0f0f2;border-left:0;
+        color:#424245;font-size:.95rem;line-height:1.65;padding:.9rem 1rem;
+        margin-bottom:1.1rem;width:846px;max-width:calc(100% - 2rem);box-sizing:border-box;border-radius:18px;
+        box-shadow:0 4px 18px rgba(0,0,0,.05)
+    }
+    .panel-title{
+        font-family:"Times New Roman","Malgun Gothic",Times,serif;
+        font-size:1rem;font-weight:700;margin:.35rem 0 .05rem;color:#1d1d1f;
+        border-bottom:0;padding-bottom:0
+    }
+    div[data-testid="stMarkdownContainer"]:has(.panel-title){margin-bottom:-.15rem}
+    .result-card{
+        width:100%;box-sizing:border-box;height:3.25rem;min-height:3.25rem;max-height:3.25rem;
+        overflow-y:auto;font-size:.88rem;line-height:1.5;padding:.75rem .85rem;
+        margin-bottom:.65rem;background:#ffffff;border:1px solid #f0f0f2;border-radius:2px;
+        box-shadow:0 4px 18px rgba(0,0,0,.05);color:#1d1d1f
+    }
+    .approval-actions{margin-top:0}
+    .term-card{
+        background:#ffffff;border:1px solid #f0f0f2;border-radius:18px;
+        padding:.85rem;margin-bottom:.65rem;box-shadow:0 4px 18px rgba(0,0,0,.05);
+        min-height:4.6rem;font-size:.88rem;line-height:1.5
+    }
+    .term-card b{font-size:.94rem;color:#1d1d1f}.term-card small{color:#86868b;font-size:.78rem}
+    .rec-name{font-size:1.05rem;font-weight:700;color:#1d1d1f;margin:.05rem 0 .3rem}
+    .rec-reason{font-size:.76rem;line-height:1.45;color:#6e6e73}
+    .rec-score{font-size:.72rem;color:#0071e3;margin-top:.25rem}
+    .empty-card{
+        background:#ffffff;border:1px solid #f0f0f2;border-radius:18px;
+        padding:.85rem;color:#6e6e73;font-size:.88rem
+    }
+    .result-box{
+        background:#ffffff;border:1px solid #f0f0f2;border-radius:18px;
+        padding:.85rem;margin-bottom:.65rem;box-shadow:0 4px 18px rgba(0,0,0,.05);
+        min-height:4.6rem;font-size:.88rem;line-height:1.5;color:#1d1d1f
+    }
+    .agent-log{
+        background:#1d1d1f;color:#f5f5f7;border:1px solid #1d1d1f;border-radius:18px;
+        padding:.75rem;font-family:"Times New Roman","Malgun Gothic",Times,serif;font-size:.74rem;
+        max-height:520px;overflow-y:auto;white-space:pre-wrap
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -1821,9 +1868,9 @@ def execute_prompt(runtime: Runtime, prompt: str) -> AgentTurnState:
 def render_lookup_result() -> None:
     """조회/문의 결과를 입력 의도에 맞춰 표시합니다."""
 
-    st.markdown('<div class="panel-title">조회/문의 결과</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">&nbsp;&nbsp;[ 조회/문의 결과 ]</div>', unsafe_allow_html=True)
     if st.session_state["lookup_answer"]:
-        st.markdown(f'<div class="result-box">{st.session_state["lookup_answer"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="result-card">{st.session_state["lookup_answer"]}</div>', unsafe_allow_html=True)
     if st.session_state["lookup_mode"] == "qa":
         results = cast(list[SimilarAnswerDocument], st.session_state["qa_results"])
         for item in results:
@@ -1834,7 +1881,7 @@ def render_lookup_result() -> None:
         return
     similar_terms = cast(list[SimilarTerm], st.session_state["similar"])
     if not similar_terms:
-        st.markdown('<div class="empty-card">조회/문의 버튼을 누르면 이 영역에 결과가 표시됩니다.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="result-card">조회/문의 버튼을 누르면 이 영역에 결과가 표시됩니다.</div>', unsafe_allow_html=True)
         return
     for item in similar_terms:
         st.markdown(
@@ -1846,10 +1893,10 @@ def render_lookup_result() -> None:
 def render_recommendations(runtime: Runtime) -> None:
     """추천 용어를 체크박스와 등록 버튼으로 표시합니다."""
 
-    st.markdown('<div class="panel-title">추천 결과</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">&nbsp;&nbsp;[ 추천 결과 ]</div>', unsafe_allow_html=True)
     recommendations = cast(list[Recommendation], st.session_state["recs"])
     if not recommendations:
-        st.markdown('<div class="empty-card">추천 버튼을 누르면 표준단어 조합 후보가 표시됩니다.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="result-card">추천 버튼을 누르면 표준단어 조합 후보가 표시됩니다.</div>', unsafe_allow_html=True)
         return
 
     selected_idx = cast(int | None, st.session_state["selected_rec_idx"])
@@ -1884,12 +1931,13 @@ def render_recommendations(runtime: Runtime) -> None:
 def render_change_result(runtime: Runtime) -> None:
     """등록/변경 결과를 변경 버튼 하단 영역에 표시합니다."""
 
-    st.markdown('<div class="panel-title">등록/변경 결과</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">&nbsp;&nbsp;[ 등록/변경 결과 ]</div>', unsafe_allow_html=True)
     st.markdown(
-        f'<div class="result-box">{st.session_state["answer"] or "아직 등록 또는 변경 결과가 없습니다."}</div>',
+        f'<div class="result-card">{st.session_state["answer"] or "아직 등록 또는 변경 결과가 없습니다."}</div>',
         unsafe_allow_html=True,
     )
     if pending_human_change(cast(list[AgentMessage], st.session_state["memory"])):
+        st.markdown('<div class="approval-actions">', unsafe_allow_html=True)
         approve_col, reject_col = st.columns([1, 1], gap="small")
         with approve_col:
             if st.button("승인", use_container_width=True):
@@ -1899,6 +1947,7 @@ def render_change_result(runtime: Runtime) -> None:
             if st.button("취소", use_container_width=True):
                 result = execute_prompt(runtime, "취소")
                 st.session_state["answer"] = result.final_answer
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
 def render_project_documents(runtime: Runtime) -> None:
@@ -1920,16 +1969,16 @@ def render_app() -> None:
     css()
     runtime = get_runtime()
     render_project_documents(runtime)
-    st.markdown('<div class="dash-title">DAsh</div>', unsafe_allow_html=True)
-    st.markdown('<div class="dash-lead">DAsh는 표준용어 관리를 돕는 Pi-mono Super Agent입니다. 조회/문의 버튼은 사용자 입력 의도에 따라 표준용어 Vector DB 조회 또는 별도 문의답변 Vector DB 기반 RAG+LLM 답변을 자동 수행합니다.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="dash-title">&nbsp;DAsh</div>', unsafe_allow_html=True)
+    st.markdown('<div class="dash-lead">데이터 모델에서 사용되는 표준용어 관리 Agent<br>목표1: 표준용어 재사용율을 높인다. / 목표2: 추천 용어 등록율을 높인다.</div>', unsafe_allow_html=True)
 
-    work_area, log_area = st.columns([3.8, 1], gap="large")
+    work_area, log_area = st.columns([3.8, 1.21], gap="large")
     with work_area:
-        st.markdown('<div class="panel-title">사용자 입력</div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">&nbsp;&nbsp;[ 사용자 입력 ]</div>', unsafe_allow_html=True)
         user_text = st.text_area(
             "입력",
             height=150,
-            placeholder="작업이 시작된 일시\n표준용어 등록 절차가 뭐야?\n'작업시작일시'의 설명을 '작업이 시작된 일시'로 수정\n'작업시작일시' 삭제",
+            placeholder="ex 1) 작업이 시작된 일시\nex 2) 표준용어 등록 절차가 뭐야?\nex 3) '작업시작일시'의 설명을 '작업이 시작된 일시'로 수정\nex 4) '작업시작일시' 삭제",
             label_visibility="collapsed",
         )
         lookup_col, recommend_col, change_col = st.columns([1, 1, 1], gap="small")
@@ -1957,7 +2006,7 @@ def render_app() -> None:
             render_change_result(runtime)
 
     with log_area:
-        st.markdown('<div class="panel-title">Agent 처리 로그</div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">&nbsp;&nbsp;[ Agent 처리 로그 ]</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div class="agent-log">{"<br><br>".join(cast(list[str], st.session_state["events"])) or "SSE 이벤트가 여기에 표시됩니다."}</div>',
             unsafe_allow_html=True,
