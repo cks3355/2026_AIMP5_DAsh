@@ -172,7 +172,7 @@ const runAgent = async (input) => {
 const server = http.createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/health") {
-      sendJson(response, 200, { ok: true, role: "pi_super_agent", version: "v11" });
+      sendJson(response, 200, { ok: true, role: "pi_super_agent", version: "v12" });
       return;
     }
     if (request.method === "POST" && request.url === "/run") {
