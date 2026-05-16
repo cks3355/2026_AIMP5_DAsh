@@ -254,6 +254,7 @@ class AppConfig:
 
     mock_mode: bool
     openai_api_key: str | None
+    openai_base_url: str | None
     embedding_api_key: str | None
     embedding_base_url: str | None
     tavily_api_key: str | None
@@ -284,13 +285,14 @@ class AppConfig:
         return cls(
             mock_mode=os.getenv("MOCK_MODE", "false").lower() == "true",
             openai_api_key=os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY") or None,
+            openai_base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL") or None,
             embedding_api_key=os.getenv("OPENAI_EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY") or None,
             embedding_base_url=os.getenv("EMBEDDING_BASE_URL") or os.getenv("OPENAI_BASE_URL") or None,
             embedding_api_version=os.getenv("EMBEDDING_API_VERSION", "2024-12-01-preview"),
             tavily_api_key=os.getenv("TAVILY_API_KEY") or None,
             oracle_url=os.getenv("ORACLE_URL") or os.getenv("DATABASE_URL"),
             langsmith_project=os.getenv("LANGSMITH_PROJECT"),
-            model_name=os.getenv("OPENAI_MODEL", "gpt-5.4"),
+            model_name=os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "gpt-5.4",
             embedding_model_name=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"),
             pimono_enabled=os.getenv("PIMONO_ENABLED", "true").lower() != "false",
             pimono_provider=os.getenv("PIMONO_PROVIDER", "openai"),
@@ -400,6 +402,28 @@ class OpenAIEmbeddingService:
 
         response = self.client.embeddings.create(model=self.model, input=value)
         return cast(list[float], response.data[0].embedding)
+
+
+class AzureChatService:
+    """프로젝트 .env의 Azure OpenAI LLM 설정으로 chat completion을 호출합니다."""
+
+    def __init__(self, config: AppConfig) -> None:
+        if not config.openai_api_key or not config.openai_base_url:
+            raise RuntimeError("LLM_API_KEY와 LLM_BASE_URL이 필요합니다.")
+        try:
+            from openai import AzureOpenAI
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError("openai 패키지가 설치되어 있지 않습니다.") from exc
+        self.model = config.model_name
+        self.client = AzureOpenAI(
+            azure_endpoint=config.openai_base_url,
+            api_key=config.openai_api_key,
+            api_version=config.embedding_api_version,
+        )
+
+    def invoke(self, messages: list[dict[str, str]]) -> Any:
+        response = self.client.chat.completions.create(model=self.model, messages=messages)
+        return response.choices[0].message
 
 
 def cosine(left: list[float], right: list[float]) -> float:
@@ -1085,8 +1109,8 @@ class ToolBox:
     llm_client: Any = field(init=False, default=None)
 
     def __post_init__(self) -> None:
-        if not self.config.mock_mode and ChatOpenAI is not None and self.config.openai_api_key:
-            self.llm_client = ChatOpenAI(model=self.config.model_name, api_key=self.config.openai_api_key, temperature=0.1)
+        if not self.config.mock_mode and self.config.openai_api_key and self.config.openai_base_url:
+            self.llm_client = AzureChatService(self.config)
         self.tools = {
             "search_similar_terms": AgentTool("search_similar_terms", "Vector DB 유사 용어 조회", self.search_similar_terms),
             "search_answer_documents": AgentTool("search_answer_documents", "문의답변 Vector DB RAG 조회", self.search_answer_documents),
@@ -1182,8 +1206,8 @@ class LlmBoundary:
 
     def __init__(self, config: AppConfig) -> None:
         self.client = None
-        if not config.mock_mode and ChatOpenAI is not None and config.openai_api_key:
-            self.client = ChatOpenAI(model=config.model_name, api_key=config.openai_api_key, temperature=0.1)
+        if not config.mock_mode and config.openai_api_key and config.openai_base_url:
+            self.client = AzureChatService(config)
 
     def convert_to_llm(self, messages: list[AgentMessage]) -> list[dict[str, str]]:
         """AgentMessage를 provider role/content로 변환합니다."""
