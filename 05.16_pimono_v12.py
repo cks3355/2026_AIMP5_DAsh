@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# DAsh: Pi Agent Super Agent + Python tool backend prototype v11.
+# DAsh: Pi Agent Super Agent + Python tool backend prototype v12.
 #
 # Node 런너에서 @earendil-works/pi-agent-core / @earendil-works/pi-ai를 실제 import합니다.
 # - 내부 대화는 AgentMessage로 유지하고 LLM 호출 경계에서만 provider message로 변환합니다.
@@ -9,13 +9,13 @@ from __future__ import annotations
 # - subagent2는 validate_agent를 별도 LangGraph로 실행합니다.
 # - Mock RDB/표준용어 Vector DB/문의답변 Vector DB로 바로 실행되며, .env 설정으로 Oracle/FAISS/OpenAI 교체 지점을 둡니다.
 # - agents/prd/trd/skill 문서를 런타임에 로드해 코드와 명세를 함께 확인합니다.
-# - v11은 Node Pi Agent를 Super Agent로 두고 Python을 tool backend로 호출합니다.
+# - v12는 실제 PostgreSQL RDB(postgres)와 pgvector DB(pgvector_test)를 기본 저장소로 사용합니다.
 #
 # 실행 방법:
 #     npm install @earendil-works/pi-agent-core @earendil-works/pi-ai
-#     streamlit run 05.13_pimono_v11.py
-#     python 05.13_pimono_v11.py "표준용어 등록 절차가 뭐야?"
-#     python 05.13_pimono_v11.py --docs
+#     streamlit run 05.16_pimono_v12.py
+#     python 05.16_pimono_v12.py "표준용어 등록 절차가 뭐야?"
+#     python 05.16_pimono_v12.py --docs
 
 import hashlib
 import json
@@ -23,6 +23,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -87,7 +88,7 @@ except Exception:  # pragma: no cover
 
 BASE_DIR = Path(__file__).resolve().parent
 SIMILARITY_TOP_K = 3
-SIMILARITY_THRESHOLD = 0.6
+SIMILARITY_THRESHOLD = 0.5
 QA_RETRIEVAL_TOP_K = 8
 QA_FINAL_TOP_K = 3
 DOC_FILES = {
@@ -253,26 +254,40 @@ class AppConfig:
 
     mock_mode: bool
     openai_api_key: str | None
+    embedding_api_key: str | None
+    embedding_base_url: str | None
     tavily_api_key: str | None
     oracle_url: str | None
     langsmith_project: str | None
     model_name: str = "gpt-5.4"
     embedding_model_name: str = "text-embedding-3-large"
+    embedding_api_version: str = "2024-12-01-preview"
     pimono_enabled: bool = True
     pimono_provider: str = "openai"
     pimono_model_name: str = "gpt-4o-mini"
     pimono_server_url: str = "http://127.0.0.1:8775"
     python_tool_server_url: str = "http://127.0.0.1:8776"
+    postgres_host: str = "localhost"
+    postgres_rdb_database: str = "postgres"
+    postgres_vector_database: str = "pgvector_test"
+    postgres_user: str = "postgres"
+    postgres_password: str = "Smartdaadmin123!"
+    postgres_port: int = 5432
+    postgres_psql_path: str | None = None
+    vector_dimensions: int = 3072
 
     @classmethod
     def from_env(cls) -> "AppConfig":
         """DB/API 연결 정보를 .env에서 읽습니다."""
 
-        load_dotenv(BASE_DIR / ".env")
+        load_project_env(BASE_DIR / ".env")
         return cls(
-            mock_mode=os.getenv("MOCK_MODE", "true").lower() != "false",
-            openai_api_key=os.getenv("OPENAI_API_KEY"),
-            tavily_api_key=os.getenv("TAVILY_API_KEY"),
+            mock_mode=os.getenv("MOCK_MODE", "false").lower() == "true",
+            openai_api_key=os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY") or None,
+            embedding_api_key=os.getenv("OPENAI_EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY") or None,
+            embedding_base_url=os.getenv("EMBEDDING_BASE_URL") or os.getenv("OPENAI_BASE_URL") or None,
+            embedding_api_version=os.getenv("EMBEDDING_API_VERSION", "2024-12-01-preview"),
+            tavily_api_key=os.getenv("TAVILY_API_KEY") or None,
             oracle_url=os.getenv("ORACLE_URL") or os.getenv("DATABASE_URL"),
             langsmith_project=os.getenv("LANGSMITH_PROJECT"),
             model_name=os.getenv("OPENAI_MODEL", "gpt-5.4"),
@@ -282,7 +297,29 @@ class AppConfig:
             pimono_model_name=os.getenv("PIMONO_MODEL", "gpt-4o-mini"),
             pimono_server_url=os.getenv("PIMONO_SERVER_URL", "http://127.0.0.1:8775").rstrip("/"),
             python_tool_server_url=os.getenv("PYTHON_TOOL_SERVER_URL", "http://127.0.0.1:8776").rstrip("/"),
+            postgres_host=os.getenv("POSTGRES_HOST", "localhost"),
+            postgres_rdb_database=os.getenv("POSTGRES_RDB_DATABASE", os.getenv("POSTGRES_DATABASE", "postgres")),
+            postgres_vector_database=os.getenv("POSTGRES_VECTOR_DATABASE", "pgvector_test"),
+            postgres_user=os.getenv("POSTGRES_USER", "postgres"),
+            postgres_password=os.getenv("POSTGRES_PASSWORD", "Smartdaadmin123!"),
+            postgres_port=int(os.getenv("POSTGRES_PORT", "5432")),
+            postgres_psql_path=os.getenv("POSTGRES_PSQL_PATH"),
+            vector_dimensions=int(os.getenv("POSTGRES_VECTOR_DIMENSIONS", "3072")),
         )
+
+
+def load_project_env(path: Path) -> None:
+    """python-dotenv가 없어도 프로젝트 .env를 로드합니다."""
+
+    loaded = load_dotenv(path)
+    if loaded or not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def event(event_type: str, agent: str, message: str = "", **payload: Any) -> AgentEvent:
@@ -345,14 +382,24 @@ class OpenAIEmbeddingService:
     """운영 모드에서 text-embedding-3-large를 호출합니다."""
 
     def __init__(self, config: AppConfig) -> None:
-        if OpenAIEmbeddings is None:
-            raise RuntimeError("langchain-openai가 설치되어 있지 않습니다.")
-        self.client = OpenAIEmbeddings(model=config.embedding_model_name, api_key=config.openai_api_key)
+        if not config.embedding_api_key:
+            raise RuntimeError("OPENAI_EMBEDDING_API_KEY, OPENAI_API_KEY 또는 LLM_API_KEY가 필요합니다.")
+        try:
+            from openai import AzureOpenAI
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError("openai 패키지가 설치되어 있지 않습니다.") from exc
+        self.model = config.embedding_model_name
+        self.client = AzureOpenAI(
+            azure_endpoint=config.embedding_base_url,
+            api_key=config.embedding_api_key,
+            api_version=config.embedding_api_version,
+        )
 
     def embed(self, value: str) -> list[float]:
         """OpenAI embedding API를 호출합니다."""
 
-        return cast(list[float], self.client.embed_query(value))
+        response = self.client.embeddings.create(model=self.model, input=value)
+        return cast(list[float], response.data[0].embedding)
 
 
 def cosine(left: list[float], right: list[float]) -> float:
@@ -498,6 +545,188 @@ class OracleTermRepository:
             conn.execute(text("UPDATE standard_terms SET deleted_yn='Y', updated_at=SYSTIMESTAMP WHERE logical_name=:n"), {"n": logical_name})
 
 
+def sql_literal(value: Any) -> str:
+    """psql 호출에 사용할 SQL literal을 안전하게 만듭니다."""
+
+    if value is None:
+        return "NULL"
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def vector_literal(values: list[float]) -> str:
+    """pgvector 입력 literal을 만듭니다."""
+
+    return sql_literal("[" + ",".join(f"{float(value):.9f}" for value in values) + "]") + "::vector"
+
+
+class PsqlClient:
+    """추가 Python DB 드라이버 없이 로컬 psql.exe로 PostgreSQL에 접속합니다."""
+
+    def __init__(self, config: AppConfig, database: str) -> None:
+        self.config = config
+        self.database = database
+        self.psql_path = self._resolve_psql_path(config.postgres_psql_path)
+
+    @staticmethod
+    def _resolve_psql_path(explicit_path: str | None) -> str:
+        candidates = [
+            explicit_path,
+            shutil.which("psql"),
+            r"C:\Program Files\PostgreSQL\17\bin\psql.exe",
+            r"C:\Program Files\PostgreSQL\17\pgAdmin 4\runtime\psql.exe",
+        ]
+        for candidate in candidates:
+            if candidate and Path(candidate).exists():
+                return str(candidate)
+        raise RuntimeError("psql.exe를 찾을 수 없습니다. POSTGRES_PSQL_PATH를 설정하세요.")
+
+    def execute(self, sql: str) -> str:
+        env = os.environ.copy()
+        env["PGPASSWORD"] = self.config.postgres_password
+        env["PGCLIENTENCODING"] = "UTF8"
+        command = [
+            self.psql_path,
+            "-h",
+            self.config.postgres_host,
+            "-p",
+            str(self.config.postgres_port),
+            "-U",
+            self.config.postgres_user,
+            "-d",
+            self.database,
+            "-q",
+            "-t",
+            "-A",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            "-",
+        ]
+        result = subprocess.run(command, input=sql, capture_output=True, text=True, encoding="utf-8", env=env, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "psql 실행 실패")
+        return result.stdout.strip()
+
+    def query_json(self, select_sql: str) -> list[dict[str, Any]]:
+        body = select_sql.strip().rstrip(";")
+        raw = self.execute(f"SELECT COALESCE(json_agg(row_to_json(q)), '[]'::json) FROM ({body}) q;")
+        return cast(list[dict[str, Any]], json.loads(raw or "[]"))
+
+
+class PostgresTermRepository:
+    """실제 PostgreSQL RDB(postgres)의 표준용어/표준단어 저장소입니다."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self.client = PsqlClient(config, config.postgres_rdb_database)
+        self.ensure_schema()
+        self.seed_if_empty()
+
+    def ensure_schema(self) -> None:
+        self.client.execute(
+            """
+            CREATE TABLE IF NOT EXISTS standard_terms (
+                logical_name TEXT PRIMARY KEY,
+                physical_name TEXT,
+                description TEXT NOT NULL,
+                domain TEXT NOT NULL DEFAULT 'common',
+                deleted_yn CHAR(1) NOT NULL DEFAULT 'N',
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS standard_words (
+                logical_name TEXT PRIMARY KEY,
+                physical_name TEXT NOT NULL,
+                meaning_hint TEXT NOT NULL,
+                use_yn CHAR(1) NOT NULL DEFAULT 'Y',
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+
+    def seed_if_empty(self) -> None:
+        counts = self.client.query_json(
+            "SELECT (SELECT count(*) FROM standard_terms) AS term_count, "
+            "(SELECT count(*) FROM standard_words) AS word_count"
+        )[0]
+        seed = MockTermRepository()
+        if int(counts["term_count"]) == 0:
+            for term in seed.list_terms():
+                self.upsert_term(term)
+        if int(counts["word_count"]) == 0:
+            for word in seed.list_words():
+                self.client.execute(
+                    """
+                    INSERT INTO standard_words(logical_name, physical_name, meaning_hint, use_yn, updated_at)
+                    VALUES ({logical_name}, {physical_name}, {meaning_hint}, 'Y', CURRENT_TIMESTAMP)
+                    ON CONFLICT (logical_name) DO UPDATE
+                    SET physical_name=EXCLUDED.physical_name,
+                        meaning_hint=EXCLUDED.meaning_hint,
+                        use_yn='Y',
+                        updated_at=CURRENT_TIMESTAMP;
+                    """.format(
+                        logical_name=sql_literal(word.logical_name),
+                        physical_name=sql_literal(word.physical_name),
+                        meaning_hint=sql_literal(word.meaning_hint),
+                    )
+                )
+
+    def list_terms(self) -> list[StandardTerm]:
+        rows = self.client.query_json(
+            """
+            SELECT logical_name, physical_name, description, domain, updated_at::text AS updated_at
+            FROM standard_terms
+            WHERE deleted_yn='N'
+            ORDER BY logical_name
+            """
+        )
+        return [StandardTerm(**row) for row in rows]
+
+    def list_words(self) -> list[StandardWord]:
+        rows = self.client.query_json(
+            """
+            SELECT logical_name, physical_name, meaning_hint
+            FROM standard_words
+            WHERE use_yn='Y'
+            ORDER BY logical_name
+            """
+        )
+        return [StandardWord(**row) for row in rows]
+
+    def get_term(self, logical_name: str) -> StandardTerm | None:
+        rows = self.client.query_json(
+            """
+            SELECT logical_name, physical_name, description, domain, updated_at::text AS updated_at
+            FROM standard_terms
+            WHERE logical_name={logical_name} AND deleted_yn='N'
+            """.format(logical_name=sql_literal(logical_name))
+        )
+        return StandardTerm(**rows[0]) if rows else None
+
+    def upsert_term(self, term: StandardTerm) -> None:
+        self.client.execute(
+            """
+            INSERT INTO standard_terms(logical_name, physical_name, description, domain, deleted_yn, updated_at)
+            VALUES ({logical_name}, {physical_name}, {description}, {domain}, 'N', CURRENT_TIMESTAMP)
+            ON CONFLICT (logical_name) DO UPDATE
+            SET physical_name=EXCLUDED.physical_name,
+                description=EXCLUDED.description,
+                domain=EXCLUDED.domain,
+                deleted_yn='N',
+                updated_at=CURRENT_TIMESTAMP;
+            """.format(
+                logical_name=sql_literal(term.logical_name),
+                physical_name=sql_literal(term.physical_name),
+                description=sql_literal(term.description),
+                domain=sql_literal(term.domain),
+            )
+        )
+
+    def delete_term(self, logical_name: str) -> None:
+        self.client.execute(
+            "UPDATE standard_terms SET deleted_yn='Y', updated_at=CURRENT_TIMESTAMP "
+            f"WHERE logical_name={sql_literal(logical_name)};"
+        )
+
+
 class VectorRepository(Protocol):
     """Vector DB 접근 인터페이스입니다."""
 
@@ -600,6 +829,240 @@ class FaissAnswerVectorRepository(MockAnswerVectorRepository):
     """문의 답변 전용 FAISS 교체 지점입니다. 현재는 실행성을 위해 Mock 구현을 상속합니다."""
 
 
+class PgVectorTermRepository:
+    """실제 pgvector DB(pgvector_test)의 표준용어 embedding 저장소입니다."""
+
+    def __init__(self, config: AppConfig, terms: TermRepository, embedder: EmbeddingService) -> None:
+        self.config = config
+        self.terms = terms
+        self.embedder = embedder
+        self.client = PsqlClient(config, config.postgres_vector_database)
+        self.ensure_schema()
+        self.sync_from_rdb()
+
+    def ensure_schema(self) -> None:
+        self._drop_if_dimension_changed("standard_term_vectors")
+        self.client.execute(
+            f"""
+            CREATE EXTENSION IF NOT EXISTS vector;
+            CREATE TABLE IF NOT EXISTS standard_term_vectors (
+                logical_name TEXT PRIMARY KEY,
+                physical_name TEXT,
+                description TEXT NOT NULL,
+                domain TEXT NOT NULL DEFAULT 'common',
+                embedding vector({self.config.vector_dimensions}) NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+
+    def _drop_if_dimension_changed(self, table_name: str) -> None:
+        rows = self.client.query_json(
+            """
+            SELECT format_type(a.atttypid, a.atttypmod) AS column_type
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relname = {table_name}
+              AND a.attname = 'embedding'
+              AND NOT a.attisdropped
+            """.format(table_name=sql_literal(table_name))
+        )
+        expected = f"vector({self.config.vector_dimensions})"
+        if rows and str(rows[0]["column_type"]) != expected:
+            self.client.execute(f"DROP TABLE IF EXISTS {table_name};")
+
+    def sync_from_rdb(self) -> None:
+        existing = {
+            str(row["logical_name"])
+            for row in self.client.query_json("SELECT logical_name FROM standard_term_vectors")
+        }
+        for term in self.terms.list_terms():
+            if term.logical_name not in existing:
+                self.upsert(term)
+
+    def search(self, description: str, top_k: int = SIMILARITY_TOP_K) -> list[SimilarTerm]:
+        query = self.embedder.embed(description)
+        rows = self.client.query_json(
+            """
+            SELECT logical_name,
+                   physical_name,
+                   description,
+                   domain,
+                   updated_at::text AS updated_at,
+                   1 - (embedding <=> {query_vector}) AS similarity
+            FROM standard_term_vectors
+            ORDER BY embedding <=> {query_vector}
+            LIMIT {limit}
+            """.format(query_vector=vector_literal(query), limit=max(top_k, SIMILARITY_TOP_K))
+        )
+        results = [
+            SimilarTerm(
+                term=StandardTerm(
+                    logical_name=str(row["logical_name"]),
+                    physical_name=cast(str | None, row.get("physical_name")),
+                    description=str(row["description"]),
+                    domain=str(row.get("domain") or "common"),
+                    updated_at=str(row.get("updated_at") or datetime.now(timezone.utc).isoformat(timespec="seconds")),
+                ),
+                similarity=float(row["similarity"] or 0.0),
+            )
+            for row in rows
+        ]
+        return [item for item in results[:top_k] if item.similarity >= SIMILARITY_THRESHOLD]
+
+    def upsert(self, term: StandardTerm) -> None:
+        embedding = self.embedder.embed(f"{term.logical_name} {term.description}")
+        self.client.execute(
+            """
+            INSERT INTO standard_term_vectors(logical_name, physical_name, description, domain, embedding, updated_at)
+            VALUES ({logical_name}, {physical_name}, {description}, {domain}, {embedding}, CURRENT_TIMESTAMP)
+            ON CONFLICT (logical_name) DO UPDATE
+            SET physical_name=EXCLUDED.physical_name,
+                description=EXCLUDED.description,
+                domain=EXCLUDED.domain,
+                embedding=EXCLUDED.embedding,
+                updated_at=CURRENT_TIMESTAMP;
+            """.format(
+                logical_name=sql_literal(term.logical_name),
+                physical_name=sql_literal(term.physical_name),
+                description=sql_literal(term.description),
+                domain=sql_literal(term.domain),
+                embedding=vector_literal(embedding),
+            )
+        )
+
+    def delete(self, logical_name: str) -> None:
+        self.client.execute(f"DELETE FROM standard_term_vectors WHERE logical_name={sql_literal(logical_name)};")
+
+
+class PgVectorAnswerRepository:
+    """실제 pgvector DB(pgvector_test)의 문의답변 RAG embedding 저장소입니다."""
+
+    def __init__(self, config: AppConfig, documents: list[AnswerDocument], embedder: EmbeddingService) -> None:
+        self.config = config
+        self.embedder = embedder
+        self.client = PsqlClient(config, config.postgres_vector_database)
+        self.ensure_schema()
+        self.seed_documents(documents)
+
+    def ensure_schema(self) -> None:
+        self._drop_if_dimension_changed("answer_document_vectors")
+        self.client.execute(
+            f"""
+            CREATE EXTENSION IF NOT EXISTS vector;
+            CREATE TABLE IF NOT EXISTS answer_document_vectors (
+                doc_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source TEXT NOT NULL,
+                keywords_text TEXT NOT NULL DEFAULT '',
+                embedding vector({self.config.vector_dimensions}) NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+
+    def _drop_if_dimension_changed(self, table_name: str) -> None:
+        rows = self.client.query_json(
+            """
+            SELECT format_type(a.atttypid, a.atttypmod) AS column_type
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relname = {table_name}
+              AND a.attname = 'embedding'
+              AND NOT a.attisdropped
+            """.format(table_name=sql_literal(table_name))
+        )
+        expected = f"vector({self.config.vector_dimensions})"
+        if rows and str(rows[0]["column_type"]) != expected:
+            self.client.execute(f"DROP TABLE IF EXISTS {table_name};")
+
+    def seed_documents(self, documents: list[AnswerDocument]) -> None:
+        count = int(self.client.query_json("SELECT count(*) AS count FROM answer_document_vectors")[0]["count"])
+        if count == 0:
+            for document in documents:
+                self.upsert(document)
+
+    def search(self, question: str, top_k: int = QA_FINAL_TOP_K) -> list[SimilarAnswerDocument]:
+        query_vector = self.embedder.embed(question)
+        query_tokens = tokenize(question)
+        rows = self.client.query_json(
+            """
+            SELECT doc_id,
+                   title,
+                   content,
+                   source,
+                   keywords_text,
+                   1 - (embedding <=> {query_vector}) AS vector_score
+            FROM answer_document_vectors
+            ORDER BY embedding <=> {query_vector}
+            LIMIT {limit}
+            """.format(query_vector=vector_literal(query_vector), limit=QA_RETRIEVAL_TOP_K)
+        )
+        candidates: list[SimilarAnswerDocument] = []
+        for row in rows:
+            keywords = [item for item in str(row.get("keywords_text") or "").split("|") if item]
+            document = AnswerDocument(
+                doc_id=str(row["doc_id"]),
+                title=str(row["title"]),
+                content=str(row["content"]),
+                source=str(row["source"]),
+                keywords=keywords,
+            )
+            doc_tokens = tokenize(f"{document.title}\n{document.content}\n{' '.join(document.keywords)}")
+            vector_score = float(row["vector_score"] or 0.0)
+            keyword_score = keyword_overlap_score(query_tokens, doc_tokens)
+            ensemble_score = (0.68 * vector_score) + (0.32 * keyword_score)
+            candidates.append(
+                SimilarAnswerDocument(
+                    document=document,
+                    vector_score=vector_score,
+                    keyword_score=keyword_score,
+                    ensemble_score=ensemble_score,
+                    rerank_score=ensemble_score,
+                )
+            )
+        reranked = [self._rerank(question, item, rank) for rank, item in enumerate(candidates, start=1)]
+        reranked.sort(key=lambda x: x.rerank_score, reverse=True)
+        return reranked[:top_k]
+
+    def upsert(self, document: AnswerDocument) -> None:
+        searchable_text = f"{document.title}\n{document.content}\n{' '.join(document.keywords)}"
+        self.client.execute(
+            """
+            INSERT INTO answer_document_vectors(doc_id, title, content, source, keywords_text, embedding, updated_at)
+            VALUES ({doc_id}, {title}, {content}, {source}, {keywords_text}, {embedding}, CURRENT_TIMESTAMP)
+            ON CONFLICT (doc_id) DO UPDATE
+            SET title=EXCLUDED.title,
+                content=EXCLUDED.content,
+                source=EXCLUDED.source,
+                keywords_text=EXCLUDED.keywords_text,
+                embedding=EXCLUDED.embedding,
+                updated_at=CURRENT_TIMESTAMP;
+            """.format(
+                doc_id=sql_literal(document.doc_id),
+                title=sql_literal(document.title),
+                content=sql_literal(document.content),
+                source=sql_literal(document.source),
+                keywords_text=sql_literal("|".join(document.keywords)),
+                embedding=vector_literal(self.embedder.embed(searchable_text)),
+            )
+        )
+
+    def _rerank(self, question: str, item: SimilarAnswerDocument, rank: int) -> SimilarAnswerDocument:
+        query_tokens = tokenize(question)
+        title_bonus = 0.08 if any(token in item.document.title.lower() for token in query_tokens) else 0.0
+        keyword_bonus = min(0.12, 0.04 * len(set(query_tokens) & set(tokenize(" ".join(item.document.keywords)))))
+        source_bonus = 0.06 if item.document.source == "faq" else 0.04 if item.document.source in {"agents.md", "skill.md", "trd.md", "prd.md"} else 0.0
+        rank_penalty = 0.015 * min(rank - 1, QA_RETRIEVAL_TOP_K - 1)
+        item.rerank_score = min(1.0, item.ensemble_score + title_bonus + keyword_bonus + source_bonus - rank_penalty)
+        return item
+
+
 @dataclass(frozen=True)
 class AgentTool:
     """Pi-mono AgentTool과 유사한 tool 정의입니다."""
@@ -622,7 +1085,7 @@ class ToolBox:
     llm_client: Any = field(init=False, default=None)
 
     def __post_init__(self) -> None:
-        if not self.config.mock_mode and ChatOpenAI is not None:
+        if not self.config.mock_mode and ChatOpenAI is not None and self.config.openai_api_key:
             self.llm_client = ChatOpenAI(model=self.config.model_name, api_key=self.config.openai_api_key, temperature=0.1)
         self.tools = {
             "search_similar_terms": AgentTool("search_similar_terms", "Vector DB 유사 용어 조회", self.search_similar_terms),
@@ -719,7 +1182,7 @@ class LlmBoundary:
 
     def __init__(self, config: AppConfig) -> None:
         self.client = None
-        if not config.mock_mode and ChatOpenAI is not None:
+        if not config.mock_mode and ChatOpenAI is not None and config.openai_api_key:
             self.client = ChatOpenAI(model=config.model_name, api_key=config.openai_api_key, temperature=0.1)
 
     def convert_to_llm(self, messages: list[AgentMessage]) -> list[dict[str, str]]:
@@ -830,6 +1293,13 @@ class RouterSkill:
 class RecommendSkill:
     """Tree of Thoughts와 Self-Correction으로 추천 후보를 생성하는 skill입니다."""
 
+    @staticmethod
+    def _without_trailing_digits(name: str) -> str:
+        """skill.md 규칙에 따라 추천 표준용어가 숫자로 끝나지 않게 보정합니다."""
+
+        normalized = re.sub(r"\d+$", "", name).strip()
+        return normalized or "표준용어"
+
     def recommend(self, description: str, words: list[StandardWord], existing: list[StandardTerm]) -> list[Recommendation]:
         """여러 조합 경로를 만들고 자체 보정 후 상위 후보를 반환합니다."""
 
@@ -849,19 +1319,23 @@ class RecommendSkill:
                 name += "일시"
                 reason += "; Self-Correction: 시간 속성 보강"
                 score -= 0.03
+            name = self._without_trailing_digits(name)
             if name in existing_names:
                 name += "후보"
                 reason += "; Self-Correction: 기존 용어와 중복 보정"
                 score -= 0.12
+            name = self._without_trailing_digits(name)
             results.setdefault(name, Recommendation(logical_name=name, description=description, reason=reason, score=max(0.0, score)))
         fallback_words = matched or words[:3]
-        fallback_name = "".join(w.logical_name for w in fallback_words[:3]) or "표준용어"
-        while len(results) < 3:
-            index = len(results) + 1
-            name = f"{fallback_name}후보{index}"
-            reason = f"ToT 경로 {index}: " + ", ".join(w.logical_name for w in fallback_words[:3])
+        fallback_name = self._without_trailing_digits("".join(w.logical_name for w in fallback_words[:3]) or "표준용어")
+        fallback_suffixes = ["후보", "대안", "검토", "보정", "제안"]
+        suffix_index = 0
+        while len(results) < 3 and suffix_index < len(fallback_suffixes):
+            name = self._without_trailing_digits(f"{fallback_name}{fallback_suffixes[suffix_index]}")
+            reason = f"ToT 경로 {suffix_index + 1}: " + ", ".join(w.logical_name for w in fallback_words[:3])
             reason += "; Self-Correction: 추천 후보 다양성 보강"
-            results.setdefault(name, Recommendation(logical_name=name, description=description, reason=reason, score=max(0.0, 0.72 - index * 0.04)))
+            results.setdefault(name, Recommendation(logical_name=name, description=description, reason=reason, score=max(0.0, 0.72 - (suffix_index + 1) * 0.04)))
+            suffix_index += 1
         return sorted(results.values(), key=lambda r: r.score, reverse=True)[:3]
 
 
@@ -1259,7 +1733,7 @@ class PiMonoNodeBridge:
         try:
             with urllib.request.urlopen(f"{self.config.pimono_server_url}/health", timeout=2) as response:
                 body = json.loads(response.read().decode("utf-8"))
-                return response.status == 200 and body.get("version") == "v11"
+                return response.status == 200 and body.get("version") == "v12"
         except (OSError, urllib.error.URLError):
             return False
 
@@ -1486,7 +1960,7 @@ const runAgent = async (input) => {
 const server = http.createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/health") {
-      sendJson(response, 200, { ok: true, role: "pi_super_agent", version: "v11" });
+      sendJson(response, 200, { ok: true, role: "pi_super_agent", version: "v12" });
       return;
     }
     if (request.method === "POST" && request.url === "/run") {
@@ -1596,7 +2070,7 @@ PiMonoSuperAgent.run = _run_with_real_pimono  # type: ignore[method-assign]
 
 @dataclass(frozen=True)
 class ProjectDocuments:
-    """v11 프로젝트 명세 문서 묶음입니다."""
+    """v12 프로젝트 명세 문서 묶음입니다."""
 
     contents: dict[str, str]
 
@@ -1683,7 +2157,7 @@ class ProjectDocuments:
             ),
             (
                 "문의 답변 RAG 처리 절차",
-                "v11은 표준용어 설명 검색 Vector DB와 별개로 문의답변 Vector DB를 구성합니다. 조회/문의 버튼을 누르면 사용자 입력 의도에 따라 표준용어 Vector DB 조회 또는 문의답변 RAG+LLM 답변을 자동 수행합니다.",
+                "v12는 실제 PostgreSQL RDB와 pgvector DB를 사용하며, 표준용어 설명 검색 Vector DB와 문의답변 Vector DB를 분리합니다. 조회/문의 버튼을 누르면 사용자 입력 의도에 따라 표준용어 Vector DB 조회 또는 문의답변 RAG+LLM 답변을 자동 수행합니다.",
                 "faq",
                 ["RAG", "문의", "조회", "앙상블", "재랭킹", "LLM"],
             ),
@@ -1707,20 +2181,20 @@ class Runtime:
 
 
 def build_runtime() -> Runtime:
-    """Mock 또는 운영 모드 런타임을 조립합니다."""
+    """Mock 또는 실제 PostgreSQL/pgvector 런타임을 조립합니다."""
 
     config = AppConfig.from_env()
     documents = ProjectDocuments.load()
     if config.mock_mode:
         embedder: EmbeddingService = HashEmbeddingService()
         repo: TermRepository = MockTermRepository()
+        vector: VectorRepository = MockVectorRepository(repo, embedder)
+        answer_vector: AnswerVectorRepository = MockAnswerVectorRepository(documents.answer_documents(), embedder)
     else:
-        if not config.oracle_url:
-            raise RuntimeError("MOCK_MODE=false이면 ORACLE_URL이 필요합니다.")
         embedder = OpenAIEmbeddingService(config)
-        repo = OracleTermRepository(config.oracle_url)
-    vector: VectorRepository = MockVectorRepository(repo, embedder) if config.mock_mode else FaissVectorRepository(repo, embedder)
-    answer_vector: AnswerVectorRepository = MockAnswerVectorRepository(documents.answer_documents(), embedder) if config.mock_mode else FaissAnswerVectorRepository(documents.answer_documents(), embedder)
+        repo = PostgresTermRepository(config)
+        vector = PgVectorTermRepository(config, repo, embedder)
+        answer_vector = PgVectorAnswerRepository(config, documents.answer_documents(), embedder)
     tools = ToolBox(repo, vector, answer_vector, config)
     llm = LlmBoundary(config)
     runtime = Runtime(config, repo, vector, answer_vector, PiMonoSuperAgent(SubAgent1(tools), llm, config), documents)
@@ -1745,6 +2219,7 @@ def init_ui() -> None:
     st.session_state.setdefault("last_description", "")
     st.session_state.setdefault("lookup_requested", False)
     st.session_state.setdefault("lookup_mode", "")
+    st.session_state.setdefault("change_result_alert", False)
 
 
 def css() -> None:
@@ -1793,18 +2268,41 @@ def css() -> None:
         margin-bottom:.65rem;background:#ffffff;border:1px solid #f0f0f2;border-radius:2px;
         box-shadow:0 4px 18px rgba(0,0,0,.05);color:#1d1d1f
     }
+    .change-alert-card{border:2px solid #ff3b30}
     [data-testid="stTextArea"] textarea::placeholder,
     .placeholder-card{color:#86868b}
     .approval-actions{margin-top:0}
     .term-card{
+        width:100%;box-sizing:border-box;height:5.75rem;overflow:hidden;
         background:#ffffff;border:1px solid #f0f0f2;border-radius:18px;
         padding:.85rem;margin-bottom:.65rem;box-shadow:0 4px 18px rgba(0,0,0,.05);
-        min-height:4.6rem;font-size:.88rem;line-height:1.5
+        min-height:0;font-size:.88rem;line-height:1.5
     }
+    .rec-card{height:5.75rem;margin-bottom:.65rem;overflow:hidden}
+    div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stCheckbox"]){
+        height:6.4rem;margin-bottom:0;display:flex;align-items:center
+    }
+    div[data-testid="stCheckbox"]{
+        height:5.75rem;margin:0;padding:0 0 0 2ch;
+        display:flex;align-items:center;justify-content:center;box-sizing:border-box
+    }
+    div[data-testid="stCheckbox"] label{
+        display:flex;align-items:center;height:5.75rem;margin:0;transform:translateY(-1.05rem)
+    }
+    div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stCheckbox"]):nth-child(1) div[data-testid="stCheckbox"] label{
+        transform:translateY(-.35rem)
+    }
+    div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stCheckbox"]):nth-child(3) div[data-testid="stCheckbox"] label{
+        transform:translateY(-2.05rem)
+    }
+    div[data-testid="stCheckbox"] label > div:first-child{margin:0}
     .term-card b{font-size:.94rem;color:#1d1d1f}.term-card small{color:#86868b;font-size:.78rem}
-    .rec-name{font-size:1.05rem;font-weight:700;color:#1d1d1f;margin:.05rem 0 .3rem}
-    .rec-reason{font-size:.76rem;line-height:1.45;color:#6e6e73}
-    .rec-score{font-size:.72rem;color:#0071e3;margin-top:.25rem}
+    .rec-name{font-size:.94rem;font-weight:700;color:#1d1d1f;margin:0 0 .25rem}
+    .rec-reason{
+        font-size:.88rem;line-height:1.5;color:#1d1d1f;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+    }
+    .rec-score{font-size:.78rem;color:#86868b;margin-top:.25rem}
     .empty-card{
         background:#ffffff;border:1px solid #f0f0f2;border-radius:18px;
         padding:.85rem;color:#6e6e73;font-size:.88rem
@@ -1871,9 +2369,9 @@ def render_lookup_result() -> None:
     """조회/문의 결과를 입력 의도에 맞춰 표시합니다."""
 
     st.markdown('<div class="panel-title">&nbsp;&nbsp;[ 조회/문의 결과 ]</div>', unsafe_allow_html=True)
-    if st.session_state["lookup_answer"]:
-        st.markdown(f'<div class="result-card">{st.session_state["lookup_answer"]}</div>', unsafe_allow_html=True)
     if st.session_state["lookup_mode"] == "qa":
+        if st.session_state["lookup_answer"]:
+            st.markdown(f'<div class="result-card">{st.session_state["lookup_answer"]}</div>', unsafe_allow_html=True)
         results = cast(list[SimilarAnswerDocument], st.session_state["qa_results"])
         for item in results:
             st.markdown(
@@ -1881,8 +2379,14 @@ def render_lookup_result() -> None:
                 unsafe_allow_html=True,
             )
         return
+    if st.session_state["lookup_mode"] == "clarification" and st.session_state["lookup_answer"]:
+        st.markdown(f'<div class="result-card">{st.session_state["lookup_answer"]}</div>', unsafe_allow_html=True)
+        return
     similar_terms = cast(list[SimilarTerm], st.session_state["similar"])
     if not similar_terms:
+        if st.session_state["lookup_answer"] and st.session_state["lookup_mode"] == "term":
+            st.markdown(f'<div class="result-card">{st.session_state["lookup_answer"]}</div>', unsafe_allow_html=True)
+            return
         st.markdown(
             '<div class="result-card placeholder-card">조회/문의 버튼을 누르면<br>1)설명(의미) 기반으로 표준용어를 조회하거나,<br>2)RAG 기반으로 답변합니다.</div>',
             unsafe_allow_html=True,
@@ -1904,33 +2408,62 @@ def render_recommendations(runtime: Runtime) -> None:
         st.markdown('<div class="result-card placeholder-card">추천 버튼을 누르면 표준단어 조합 후보가 표시됩니다.</div>', unsafe_allow_html=True)
         return
 
+    def update_selected_recommendation(index: int, count: int) -> None:
+        key = f"rec_checkbox_{index}"
+        if st.session_state.get(key):
+            st.session_state["selected_rec_idx"] = index
+            for other in range(count):
+                if other != index:
+                    st.session_state[f"rec_checkbox_{other}"] = False
+        elif st.session_state.get("selected_rec_idx") == index:
+            st.session_state["selected_rec_idx"] = None
+
     selected_idx = cast(int | None, st.session_state["selected_rec_idx"])
-    for i, rec in enumerate(recommendations):
-        check_col, content_col = st.columns([0.13, 0.87], gap="small")
-        with check_col:
-            checked = st.checkbox(
+    for i in range(len(recommendations)):
+        st.session_state[f"rec_checkbox_{i}"] = selected_idx == i
+
+    check_col, content_col = st.columns([0.065, 0.935], gap="small")
+    with check_col:
+        for i, rec in enumerate(recommendations):
+            st.checkbox(
                 rec.logical_name,
-                value=selected_idx == i,
                 key=f"rec_checkbox_{i}",
                 help=rec.reason,
                 label_visibility="collapsed",
+                on_change=update_selected_recommendation,
+                args=(i, len(recommendations)),
             )
-        if checked and selected_idx != i:
-            st.session_state["selected_rec_idx"] = i
-            selected_idx = i
-        elif not checked and selected_idx == i:
-            st.session_state["selected_rec_idx"] = None
-            selected_idx = None
-        with content_col:
+    with content_col:
+        for rec in recommendations:
             st.markdown(
-                f'<div class="term-card"><div class="rec-name">{rec.logical_name}</div><div class="rec-reason">{rec.reason}</div><div class="rec-score">score={rec.score:.2f}</div></div>',
+                f'<div class="term-card rec-card"><div class="rec-name">{rec.logical_name}</div><div class="rec-reason">{rec.reason}</div><div class="rec-score">score={rec.score:.2f}</div></div>',
                 unsafe_allow_html=True,
             )
-
-    if st.button("등록", disabled=selected_idx is None, use_container_width=True):
-        rec = recommendations[cast(int, selected_idx)]
-        result = execute_prompt(runtime, f"'{rec.logical_name}' 등록: {rec.description}")
-        st.session_state["answer"] = result.final_answer
+        selected_idx = cast(int | None, st.session_state["selected_rec_idx"])
+        if st.button("등록", disabled=selected_idx is None, use_container_width=True):
+            rec = recommendations[cast(int, selected_idx)]
+            previous_answer = st.session_state["answer"]
+            previous_recs = st.session_state["recs"]
+            previous_selected_idx = st.session_state["selected_rec_idx"]
+            previous_lookup_answer = st.session_state["lookup_answer"]
+            previous_lookup_mode = st.session_state["lookup_mode"]
+            previous_lookup_requested = st.session_state["lookup_requested"]
+            previous_similar = st.session_state["similar"]
+            previous_qa_results = st.session_state["qa_results"]
+            previous_last_description = st.session_state["last_description"]
+            result = execute_prompt(runtime, f"'{rec.logical_name}' 등록: {rec.description}")
+            st.session_state["answer"] = previous_answer if result.awaiting_human_confirmation else result.final_answer
+            st.session_state["change_result_alert"] = not result.awaiting_human_confirmation
+            st.session_state["recs"] = previous_recs
+            st.session_state["selected_rec_idx"] = previous_selected_idx
+            st.session_state["lookup_answer"] = previous_lookup_answer
+            st.session_state["lookup_mode"] = previous_lookup_mode
+            st.session_state["lookup_requested"] = previous_lookup_requested
+            st.session_state["similar"] = previous_similar
+            st.session_state["qa_results"] = previous_qa_results
+            st.session_state["last_description"] = previous_last_description
+            if result.awaiting_human_confirmation:
+                st.rerun()
 
 
 def render_change_result(runtime: Runtime) -> None:
@@ -1939,22 +2472,48 @@ def render_change_result(runtime: Runtime) -> None:
     st.markdown('<div class="panel-title">&nbsp;&nbsp;[ 등록/변경 결과 ]</div>', unsafe_allow_html=True)
     change_answer = cast(str, st.session_state["answer"])
     change_card_class = "result-card" if change_answer else "result-card placeholder-card"
+    if st.session_state.get("change_result_alert"):
+        change_card_class += " change-alert-card"
     st.markdown(
         f'<div class="{change_card_class}">{change_answer or "아직 등록 또는 변경 결과가 없습니다."}</div>',
         unsafe_allow_html=True,
     )
-    if pending_human_change(cast(list[AgentMessage], st.session_state["memory"])):
-        st.markdown('<div class="approval-actions">', unsafe_allow_html=True)
-        approve_col, reject_col = st.columns([1, 1], gap="small")
-        with approve_col:
-            if st.button("승인", use_container_width=True):
-                result = execute_prompt(runtime, "승인")
-                st.session_state["answer"] = result.final_answer
-        with reject_col:
-            if st.button("취소", use_container_width=True):
-                result = execute_prompt(runtime, "취소")
-                st.session_state["answer"] = result.final_answer
-        st.markdown('</div>', unsafe_allow_html=True)
+
+
+@st.dialog("사용자 확인")
+def render_human_approval_dialog(runtime: Runtime, request: ChangeRequest, validation: ValidationResult) -> None:
+    """Human in the loop 확인을 팝업으로 처리합니다."""
+
+    def run_human_decision(decision: str) -> None:
+        previous_recs = st.session_state["recs"]
+        previous_selected_idx = st.session_state["selected_rec_idx"]
+        previous_lookup_answer = st.session_state["lookup_answer"]
+        previous_lookup_mode = st.session_state["lookup_mode"]
+        previous_lookup_requested = st.session_state["lookup_requested"]
+        previous_similar = st.session_state["similar"]
+        previous_qa_results = st.session_state["qa_results"]
+        previous_last_description = st.session_state["last_description"]
+        result = execute_prompt(runtime, decision)
+        st.session_state["answer"] = result.final_answer
+        st.session_state["change_result_alert"] = True
+        st.session_state["recs"] = previous_recs
+        st.session_state["selected_rec_idx"] = previous_selected_idx
+        st.session_state["lookup_answer"] = previous_lookup_answer
+        st.session_state["lookup_mode"] = previous_lookup_mode
+        st.session_state["lookup_requested"] = previous_lookup_requested
+        st.session_state["similar"] = previous_similar
+        st.session_state["qa_results"] = previous_qa_results
+        st.session_state["last_description"] = previous_last_description
+        st.rerun()
+
+    st.markdown(human_approval_question(request, validation).replace("\n", "<br>"), unsafe_allow_html=True)
+    approve_col, cancel_col = st.columns([1, 1], gap="small")
+    with approve_col:
+        if st.button("승인", use_container_width=True, key="hitl_approve"):
+            run_human_decision("승인")
+    with cancel_col:
+        if st.button("취소", use_container_width=True, key="hitl_cancel"):
+            run_human_decision("취소")
 
 
 def render_project_documents(runtime: Runtime) -> None:
@@ -1976,6 +2535,9 @@ def render_app() -> None:
     css()
     runtime = get_runtime()
     render_project_documents(runtime)
+    pending_change = pending_human_change(cast(list[AgentMessage], st.session_state["memory"]))
+    if pending_change:
+        render_human_approval_dialog(runtime, pending_change[0], pending_change[1])
     st.markdown('<div class="dash-title">&nbsp;DAsh</div>', unsafe_allow_html=True)
     st.markdown('<div class="dash-lead">데이터 모델에서 사용되는 표준용어 관리 Agent<br>목표1: 표준용어 재사용율을 높인다. / 목표2: 추천 용어 등록율을 높인다.</div>', unsafe_allow_html=True)
 
@@ -1991,18 +2553,39 @@ def render_app() -> None:
         lookup_col, recommend_col, change_col = st.columns([1, 1, 1], gap="small")
         with lookup_col:
             if st.button("조회/문의", use_container_width=True) and user_text.strip():
+                st.session_state["change_result_alert"] = False
+                previous_answer = st.session_state["answer"]
                 execute_prompt(runtime, user_text.strip())
+                st.session_state["answer"] = previous_answer
         with recommend_col:
             recommend_disabled = not cast(bool, st.session_state["lookup_requested"])
             if st.button("추천", disabled=recommend_disabled, use_container_width=True):
+                st.session_state["change_result_alert"] = False
                 prompt = "추천: " + (user_text.strip() or cast(str, st.session_state["last_description"]))
+                previous_answer = st.session_state["answer"]
+                previous_lookup_answer = st.session_state["lookup_answer"]
+                previous_lookup_mode = st.session_state["lookup_mode"]
+                previous_lookup_requested = st.session_state["lookup_requested"]
+                previous_similar = st.session_state["similar"]
+                previous_qa_results = st.session_state["qa_results"]
+                previous_last_description = st.session_state["last_description"]
                 result = execute_prompt(runtime, prompt)
                 st.session_state["selected_rec_idx"] = None
-                st.session_state["answer"] = result.final_answer
+                st.session_state["answer"] = previous_answer
+                st.session_state["lookup_answer"] = previous_lookup_answer
+                st.session_state["lookup_mode"] = previous_lookup_mode
+                st.session_state["lookup_requested"] = previous_lookup_requested
+                st.session_state["similar"] = previous_similar
+                st.session_state["qa_results"] = previous_qa_results
+                st.session_state["last_description"] = previous_last_description
         with change_col:
             if st.button("변경", use_container_width=True) and user_text.strip():
+                previous_answer = st.session_state["answer"]
                 result = execute_prompt(runtime, user_text.strip())
-                st.session_state["answer"] = result.final_answer
+                st.session_state["answer"] = previous_answer if result.awaiting_human_confirmation else result.final_answer
+                st.session_state["change_result_alert"] = not result.awaiting_human_confirmation
+                if result.awaiting_human_confirmation:
+                    st.rerun()
 
         lookup_result_col, recommend_result_col, change_result_col = st.columns([1, 1, 1], gap="small")
         with lookup_result_col:
@@ -2043,7 +2626,7 @@ def run_cli(args: list[str]) -> int:
         for key in DOC_FILES:
             print(f"\n--- {runtime.documents.title(key)} ---")
             print(runtime.documents.summary(key, max_lines=12))
-        print("\n실행 방법: streamlit run 05.13_pimono_v11.py")
+        print("\n실행 방법: streamlit run 05.16_pimono_v12.py")
         return 0
 
     prompt = " ".join(args).strip() or "작업이 시작된 일시"
@@ -2053,7 +2636,7 @@ def run_cli(args: list[str]) -> int:
     print("\n--- SSE ---")
     for line in stream.sse():
         print(line)
-    print("\n실행 방법: streamlit run 05.13_pimono_v11.py")
+    print("\n실행 방법: streamlit run 05.16_pimono_v12.py")
     return 0
 
 
