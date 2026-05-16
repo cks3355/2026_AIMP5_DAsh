@@ -18,6 +18,7 @@ from __future__ import annotations
 #     python 05.16_pimono_v12.py --docs
 
 import hashlib
+import base64
 import json
 import math
 import os
@@ -48,8 +49,10 @@ warnings.filterwarnings(
 
 try:
     import streamlit as st
+    import streamlit.components.v1 as components
 except Exception:  # pragma: no cover
     st = None  # type: ignore[assignment]
+    components = None  # type: ignore[assignment]
 
 try:
     from dotenv import load_dotenv
@@ -91,6 +94,7 @@ SIMILARITY_TOP_K = 3
 SIMILARITY_THRESHOLD = 0.5
 QA_RETRIEVAL_TOP_K = 8
 QA_FINAL_TOP_K = 3
+DASH_LOGO_PATH = BASE_DIR / "assets" / "dash_logo.png"
 DOC_FILES = {
     "agents": "agents.md",
     "prd": "prd.md",
@@ -1270,7 +1274,7 @@ def human_approval_question(request: ChangeRequest, validation: ValidationResult
     details = [f"대상: {target}", f"처리: {label}"]
     if validation.normalized_term and validation.normalized_term.description:
         details.append(f"설명: {validation.normalized_term.description}")
-    return "Human in the loop 확인이 필요합니다.\n" + "\n".join(details) + "\n최종 사용자 의도가 맞으면 '네', 아니면 '취소'라고 답해 주세요."
+    return "Human in the loop 확인이 필요합니다.\n" + "\n".join(details) + "\n최종 사용자 의도가 맞으면 '승인', 아니면 '취소'라고 답해 주세요."
 
 
 def pending_human_change(memory: list[AgentMessage]) -> tuple[ChangeRequest, ValidationResult] | None:
@@ -2244,6 +2248,42 @@ def init_ui() -> None:
     st.session_state.setdefault("lookup_requested", False)
     st.session_state.setdefault("lookup_mode", "")
     st.session_state.setdefault("change_result_alert", False)
+    st.session_state.setdefault("change_result_alert_version", 0)
+
+
+def set_change_result_alert(enabled: bool) -> None:
+    """등록/변경 결과 강조 상태를 갱신합니다."""
+
+    st.session_state["change_result_alert"] = enabled
+    if enabled:
+        st.session_state["change_result_alert_version"] = cast(int, st.session_state["change_result_alert_version"]) + 1
+
+
+def has_change_keyword_outside_quotes(value: str) -> bool:
+    """작은/큰 따옴표 밖에 수정 또는 삭제 지시어가 있는지 확인합니다."""
+
+    outside: list[str] = []
+    quote: str | None = None
+    for char in value:
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        outside.append(char)
+    outside_text = "".join(outside)
+    return "수정" in outside_text or "삭제" in outside_text
+
+
+def image_data_uri(path: Path) -> str:
+    """로컬 이미지를 Streamlit HTML에서 사용할 data URI로 변환합니다."""
+
+    if not path.exists():
+        return ""
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 def css() -> None:
@@ -2269,6 +2309,12 @@ def css() -> None:
     }
     div.stButton>button:hover{background:#0077ed;border-color:#0077ed;color:#ffffff}
     div.stButton>button:disabled{background:#e8e8ed;color:#86868b;border-color:#e8e8ed}
+    .dash-brand{
+        display:flex;align-items:center;margin:0 0 .75rem
+    }
+    .dash-logo-image{
+        width:12rem;max-width:100%;height:auto;display:block
+    }
     .dash-title{
         font-family:"Times New Roman","Malgun Gothic",Times,serif;
         font-size:3rem;font-weight:bold;line-height:1;color:#1d1d1f;
@@ -2277,7 +2323,7 @@ def css() -> None:
     .dash-lead{
         background:#ffffff;border:1px solid #f0f0f2;border-left:0;
         color:#424245;font-size:.95rem;line-height:1.65;padding:.9rem 1rem;
-        margin-bottom:1.1rem;width:846px;max-width:calc(100% - 2rem);box-sizing:border-box;border-radius:18px;
+        margin-bottom:1.1rem;width:846px;max-width:calc(100% - 2rem);box-sizing:border-box;border-radius:0;
         box-shadow:0 4px 18px rgba(0,0,0,.05)
     }
     .panel-title{
@@ -2477,7 +2523,7 @@ def render_recommendations(runtime: Runtime) -> None:
             previous_last_description = st.session_state["last_description"]
             result = execute_prompt(runtime, f"'{rec.logical_name}' 등록: {rec.description}")
             st.session_state["answer"] = previous_answer if result.awaiting_human_confirmation else result.final_answer
-            st.session_state["change_result_alert"] = not result.awaiting_human_confirmation
+            set_change_result_alert(not result.awaiting_human_confirmation)
             st.session_state["recs"] = previous_recs
             st.session_state["selected_rec_idx"] = previous_selected_idx
             st.session_state["lookup_answer"] = previous_lookup_answer
@@ -2498,10 +2544,37 @@ def render_change_result(runtime: Runtime) -> None:
     change_card_class = "result-card" if change_answer else "result-card placeholder-card"
     if st.session_state.get("change_result_alert"):
         change_card_class += " change-alert-card"
+    alert_version = cast(int, st.session_state["change_result_alert_version"])
     st.markdown(
-        f'<div class="{change_card_class}">{change_answer or "아직 등록 또는 변경 결과가 없습니다."}</div>',
+        f'<div id="change-result-card" class="{change_card_class}" data-alert-version="{alert_version}">{change_answer or "아직 등록 또는 변경 결과가 없습니다."}</div>',
         unsafe_allow_html=True,
     )
+    if st.session_state.get("change_result_alert") and components is not None:
+        components.html(
+            f"""
+            <script>
+            const alertVersion = "{alert_version}";
+            const storageKey = "dashChangeAlertDismissedVersion";
+            const doc = window.parent.document;
+            const card = doc.getElementById("change-result-card");
+            window.parent.__dashChangeAlertVersion = alertVersion;
+            const dismiss = () => {{
+                const currentCard = doc.getElementById("change-result-card");
+                if (!currentCard) return;
+                currentCard.classList.remove("change-alert-card");
+                window.parent.localStorage.setItem(storageKey, window.parent.__dashChangeAlertVersion);
+            }};
+            if (card && window.parent.localStorage.getItem(storageKey) === alertVersion) {{
+                card.classList.remove("change-alert-card");
+            }}
+            if (!window.parent.__dashChangeAlertDismissBound) {{
+                doc.addEventListener("click", dismiss, true);
+                window.parent.__dashChangeAlertDismissBound = true;
+            }}
+            </script>
+            """,
+            height=0,
+        )
 
 
 @st.dialog("사용자 확인")
@@ -2519,7 +2592,7 @@ def render_human_approval_dialog(runtime: Runtime, request: ChangeRequest, valid
         previous_last_description = st.session_state["last_description"]
         result = execute_prompt(runtime, decision)
         st.session_state["answer"] = result.final_answer
-        st.session_state["change_result_alert"] = True
+        set_change_result_alert(True)
         st.session_state["recs"] = previous_recs
         st.session_state["selected_rec_idx"] = previous_selected_idx
         st.session_state["lookup_answer"] = previous_lookup_answer
@@ -2562,7 +2635,11 @@ def render_app() -> None:
     pending_change = pending_human_change(cast(list[AgentMessage], st.session_state["memory"]))
     if pending_change:
         render_human_approval_dialog(runtime, pending_change[0], pending_change[1])
-    st.markdown('<div class="dash-title">&nbsp;DAsh</div>', unsafe_allow_html=True)
+    logo_uri = image_data_uri(DASH_LOGO_PATH)
+    if logo_uri:
+        st.markdown(f'<div class="dash-brand"><img class="dash-logo-image" src="{logo_uri}" alt="DAsh logo"></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="dash-title">&nbsp;DAsh</div>', unsafe_allow_html=True)
     st.markdown('<div class="dash-lead">데이터 모델에서 사용되는 표준용어 관리 Agent<br>목표1: 표준용어 재사용율을 높인다. / 목표2: 추천 용어 등록율을 높인다.</div>', unsafe_allow_html=True)
 
     work_area, log_area = st.columns([3.8, 1.21], gap="large")
@@ -2571,20 +2648,20 @@ def render_app() -> None:
         user_text = st.text_area(
             "입력",
             height=150,
-            placeholder="ex 1) 작업이 시작된 일시\nex 2) 표준용어 등록 절차가 뭐야?\nex 3) '작업시작일시'의 설명을 '작업이 시작된 일시'로 수정\nex 4) '작업시작일시' 삭제",
+            placeholder="ex 1) 작업이 시작된 일시 (용어 조회/추천을 위한 설명)\nex 2) 표준용어 등록 절차가 뭐야?\nex 3) '작업시작일시'의 설명을 '작업이 시작된 일시'로 수정\nex 4) '작업시작일시' 삭제",
             label_visibility="collapsed",
         )
         lookup_col, recommend_col, change_col = st.columns([1, 1, 1], gap="small")
         with lookup_col:
             if st.button("조회/문의", use_container_width=True) and user_text.strip():
-                st.session_state["change_result_alert"] = False
+                set_change_result_alert(False)
                 previous_answer = st.session_state["answer"]
                 execute_prompt(runtime, user_text.strip())
                 st.session_state["answer"] = previous_answer
         with recommend_col:
             recommend_disabled = not cast(bool, st.session_state["lookup_requested"])
             if st.button("추천", disabled=recommend_disabled, use_container_width=True):
-                st.session_state["change_result_alert"] = False
+                set_change_result_alert(False)
                 prompt = "추천: " + (user_text.strip() or cast(str, st.session_state["last_description"]))
                 previous_answer = st.session_state["answer"]
                 previous_lookup_answer = st.session_state["lookup_answer"]
@@ -2603,11 +2680,12 @@ def render_app() -> None:
                 st.session_state["qa_results"] = previous_qa_results
                 st.session_state["last_description"] = previous_last_description
         with change_col:
-            if st.button("변경", use_container_width=True) and user_text.strip():
+            change_disabled = not has_change_keyword_outside_quotes(user_text)
+            if st.button("변경", disabled=change_disabled, use_container_width=True) and user_text.strip():
                 previous_answer = st.session_state["answer"]
                 result = execute_prompt(runtime, user_text.strip())
                 st.session_state["answer"] = previous_answer if result.awaiting_human_confirmation else result.final_answer
-                st.session_state["change_result_alert"] = not result.awaiting_human_confirmation
+                set_change_result_alert(not result.awaiting_human_confirmation)
                 if result.awaiting_human_confirmation:
                     st.rerun()
 
@@ -2622,9 +2700,21 @@ def render_app() -> None:
     with log_area:
         st.markdown('<div class="panel-title">&nbsp;&nbsp;[ Agent 처리 로그 ]</div>', unsafe_allow_html=True)
         st.markdown(
-            f'<div class="agent-log">{"<br><br>".join(cast(list[str], st.session_state["events"])) or "SSE 이벤트가 여기에 표시됩니다."}</div>',
+            f'<div id="agent-log-scroll" class="agent-log">{"<br><br>".join(cast(list[str], st.session_state["events"])) or "SSE 이벤트가 여기에 표시됩니다."}</div>',
             unsafe_allow_html=True,
         )
+        if components is not None:
+            components.html(
+                """
+                <script>
+                const log = window.parent.document.getElementById("agent-log-scroll");
+                if (log) {
+                    log.scrollTop = log.scrollHeight;
+                }
+                </script>
+                """,
+                height=0,
+            )
 
 
 def streamlit_context() -> bool:
