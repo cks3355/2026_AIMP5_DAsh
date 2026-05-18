@@ -13,9 +13,9 @@ from __future__ import annotations
 #
 # 실행 방법:
 #     npm install @earendil-works/pi-agent-core @earendil-works/pi-ai
-#     streamlit run 05.17_pimono_v13.py
-#     python 05.17_pimono_v13.py "표준용어 등록 절차가 뭐야?"
-#     python 05.17_pimono_v13.py --docs
+#     streamlit run 05.17_pimono_v15.py
+#     python 05.17_pimono_v15.py "표준용어 등록 절차가 뭐야?"
+#     python 05.17_pimono_v15.py --docs
 
 import hashlib
 import base64
@@ -2335,7 +2335,7 @@ def css() -> None:
     }
     .dash-kicker{
         color:#2563eb;font-size:.72rem;font-weight:800;line-height:1.1;
-        letter-spacing:.08em;text-transform:uppercase;margin:0 0 .18rem
+        letter-spacing:.08em;margin:0 0 .18rem
     }
     .dash-heading{
         color:#111827;font-size:1.22rem;font-weight:800;line-height:1.25;margin:0
@@ -2352,7 +2352,11 @@ def css() -> None:
     .panel-title{
         font-family:"Times New Roman","Malgun Gothic",Times,serif;
         font-size:1rem;font-weight:700;margin:.35rem 0 .05rem;color:#1d1d1f;
-        border-bottom:0;padding-bottom:0
+        border-bottom:0;padding-bottom:0;display:flex;align-items:center;gap:.45rem
+    }
+    .panel-title::before{
+        content:"";width:.45rem;height:.45rem;border-radius:999px;
+        background:#0B1F4D;display:inline-block;flex:0 0 .45rem
     }
     div[data-testid="stMarkdownContainer"]:has(.panel-title){margin-bottom:-.15rem}
     .result-card{
@@ -2644,16 +2648,16 @@ def render_app() -> None:
             <div class="dash-brand">
                 {brand_markup}
                 <div>
-                    <div class="dash-kicker">DATA ARCHITECTURE STANDARD HUB</div>
-                    <div class="dash-heading">표준용어 관리 Agent Workspace</div>
-                    <div class="dash-subtitle">조회, 추천, 검증, 변경 결과를 한 화면에서 추적하는 운영형 데이터 표준 허브</div>
+                    <div class="dash-kicker">Data Architecture Standard Hub</div>
+                    <div class="dash-heading">표준용어 관리 Agent</div>
+                    <div class="dash-subtitle">조회, 추천, 문의, 변경 결과를 한 화면에서 추적하는 데이터 표준 허브</div>
                 </div>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="dash-lead">Data Architecture Standard Hub / 데이터 모델에서 사용되는 표준용어 관리 Agent<br>목표1: 표준용어 재사용율을 높인다. / 목표2: 추천 용어 등록율을 높인다.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="dash-lead">목표1: 표준용어 재사용율을 높인다. | 목표2: 추천 용어 등록율을 높인다.</div>', unsafe_allow_html=True)
 
     work_area, log_area = st.columns([3.8, 1.21], gap="large")
     with work_area:
@@ -2757,7 +2761,7 @@ def run_cli(args: list[str]) -> int:
         for key in DOC_FILES:
             print(f"\n--- {runtime.documents.title(key)} ---")
             print(runtime.documents.summary(key, max_lines=12))
-        print("\n실행 방법: streamlit run 05.17_pimono_v13.py")
+        print("\n실행 방법: streamlit run 05.17_pimono_v15.py")
         return 0
 
     prompt = " ".join(args).strip() or "작업이 시작된 일시"
@@ -2767,7 +2771,7 @@ def run_cli(args: list[str]) -> int:
     print("\n--- SSE ---")
     for line in stream.sse():
         print(line)
-    print("\n실행 방법: streamlit run 05.17_pimono_v13.py")
+    print("\n실행 방법: streamlit run 05.17_pimono_v15.py")
     return 0
 
 

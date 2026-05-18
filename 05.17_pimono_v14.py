@@ -13,9 +13,9 @@ from __future__ import annotations
 #
 # 실행 방법:
 #     npm install @earendil-works/pi-agent-core @earendil-works/pi-ai
-#     streamlit run 05.17_pimono_v13.py
-#     python 05.17_pimono_v13.py "표준용어 등록 절차가 뭐야?"
-#     python 05.17_pimono_v13.py --docs
+#     streamlit run 05.17_pimono_v14.py
+#     python 05.17_pimono_v14.py "표준용어 등록 절차가 뭐야?"
+#     python 05.17_pimono_v14.py --docs
 
 import hashlib
 import base64
@@ -2299,77 +2299,94 @@ def css() -> None:
     st.markdown("""
     <style>
     header[data-testid="stHeader"]{height:0;background:transparent;visibility:hidden}
-    .stApp{background:#F7F8FA;color:#1d1d1f;font-family:"Times New Roman","Malgun Gothic",Times,serif;font-size:.92rem}
-    .block-container{max-width:1760px;padding:.7rem 1.1rem 1.25rem}
-    h1,h2,h3,.stMarkdown,.stText,.stTextArea,.stButton,.stCheckbox{font-size:.92rem}
+    .stApp{
+        background:#F7F8FA;color:#182230;
+        font-family:"Inter","Pretendard","Segoe UI","Malgun Gothic",Arial,sans-serif;
+        font-size:.92rem
+    }
+    .block-container{max-width:1720px;padding:1rem 1.25rem 1.35rem}
+    h1,h2,h3,.stMarkdown,.stText,.stTextArea,.stButton,.stCheckbox{
+        font-family:"Inter","Pretendard","Segoe UI","Malgun Gothic",Arial,sans-serif;
+        font-size:.92rem;letter-spacing:0
+    }
     [data-testid="stMarkdownContainer"] p{font-size:.9rem;line-height:1.55}
     [data-testid="stTextArea"] textarea{
-        background:#ffffff;color:#1d1d1f;border:1px solid #d2d2d7;border-radius:14px;
-        font-family:"Times New Roman","Malgun Gothic",Times,serif;
-        font-size:.9rem;line-height:1.5;box-shadow:0 2px 10px rgba(0,0,0,.04)
+        background:#ffffff;color:#182230;border:1px solid #D6DEE9;border-radius:8px;
+        font-family:"Inter","Pretendard","Segoe UI","Malgun Gothic",Arial,sans-serif;
+        font-size:.9rem;line-height:1.5;box-shadow:0 1px 2px rgba(16,24,40,.05)
+    }
+    [data-testid="stTextArea"] textarea:focus{
+        border-color:#2563EB;box-shadow:0 0 0 3px rgba(37,99,235,.13)
     }
     div.stButton>button{
-        min-height:2.15rem;border-radius:999px;border:1px solid #0071e3;
-        background:#0071e3;color:#ffffff;
-        font-family:"Times New Roman","Malgun Gothic",Times,serif;
-        font-size:.88rem;font-weight:600;box-shadow:none
+        min-height:2.35rem;border-radius:8px;border:1px solid #2563EB;
+        background:#2563EB;color:#ffffff;
+        font-family:"Inter","Pretendard","Segoe UI","Malgun Gothic",Arial,sans-serif;
+        font-size:.88rem;font-weight:700;box-shadow:0 8px 18px rgba(37,99,235,.16)
     }
-    div.stButton>button:hover{background:#0077ed;border-color:#0077ed;color:#ffffff}
-    div.stButton>button:disabled{background:#e8e8ed;color:#86868b;border-color:#e8e8ed}
+    div.stButton>button:hover{background:#1D4ED8;border-color:#1D4ED8;color:#ffffff}
+    div.stButton>button:disabled{background:#EEF2F6;color:#98A2B3;border-color:#E3E8EF;box-shadow:none}
     .dash-brand{
-        display:flex;align-items:center;gap:.85rem;margin:0
+        display:flex;align-items:center;gap:.8rem;margin:0
     }
     .dash-logo-image{
-        width:9.7rem;max-width:100%;height:auto;display:block
+        width:9.6rem;max-width:100%;height:auto;display:block
     }
     .dash-title{
-        font-family:"Times New Roman","Malgun Gothic",Times,serif;
-        font-size:3rem;font-weight:bold;line-height:1;color:#1d1d1f;
+        font-family:"Inter","Pretendard","Segoe UI","Malgun Gothic",Arial,sans-serif;
+        font-size:2.35rem;font-weight:800;line-height:1;color:#111827;
         margin:0 0 .55rem;padding-bottom:.15rem;border-bottom:none;letter-spacing:0
     }
     .dash-topbar{
-        background:#ffffff;border:1px solid #dfe4ec;border-radius:8px;
-        box-shadow:0 1px 3px rgba(16,24,40,.06);
-        padding:1rem 1.15rem;margin:0 0 .95rem;
-        display:flex;align-items:center;gap:1rem
+        background:#ffffff;border:1px solid #E3E8EF;border-radius:8px;
+        box-shadow:0 12px 30px rgba(16,24,40,.06);
+        padding:1rem 1.1rem;margin:0 0 .9rem;display:flex;align-items:center;
+        justify-content:space-between;gap:1rem
     }
     .dash-kicker{
-        color:#2563eb;font-size:.72rem;font-weight:800;line-height:1.1;
-        letter-spacing:.08em;text-transform:uppercase;margin:0 0 .18rem
+        color:#2563EB;font-size:.72rem;font-weight:800;letter-spacing:.06em;
+        text-transform:uppercase;margin:0 0 .18rem
     }
     .dash-heading{
-        color:#111827;font-size:1.22rem;font-weight:800;line-height:1.25;margin:0
+        color:#182230;font-size:1.18rem;font-weight:800;line-height:1.25;margin:0
     }
     .dash-subtitle{
-        color:#475467;font-size:.86rem;line-height:1.45;margin:.25rem 0 0
+        color:#667085;font-size:.84rem;line-height:1.5;margin:.28rem 0 0
     }
+    .dash-status-row{display:flex;gap:.45rem;flex-wrap:wrap;justify-content:flex-end}
+    .dash-chip{
+        border:1px solid #D6DEE9;background:#F8FAFC;color:#344054;border-radius:999px;
+        padding:.32rem .62rem;font-size:.74rem;font-weight:700;white-space:nowrap
+    }
+    .dash-chip-strong{border-color:#B2CCFF;background:#EFF6FF;color:#1D4ED8}
     .dash-lead{
-        background:#ffffff;border:1px solid #dfe4ec;border-left:3px solid #2563eb;
-        color:#424245;font-size:.95rem;line-height:1.65;padding:.9rem 1rem;
-        margin-bottom:1.1rem;width:100%;box-sizing:border-box;border-radius:8px;
-        box-shadow:0 1px 3px rgba(16,24,40,.05)
+        background:#ffffff;border:1px solid #E3E8EF;border-left:3px solid #2563EB;
+        color:#475467;font-size:.9rem;line-height:1.65;padding:.76rem .9rem;
+        margin-bottom:.95rem;width:100%;box-sizing:border-box;border-radius:8px;
+        box-shadow:0 8px 22px rgba(16,24,40,.05)
     }
     .panel-title{
-        font-family:"Times New Roman","Malgun Gothic",Times,serif;
-        font-size:1rem;font-weight:700;margin:.35rem 0 .05rem;color:#1d1d1f;
-        border-bottom:0;padding-bottom:0
+        font-family:"Inter","Pretendard","Segoe UI","Malgun Gothic",Arial,sans-serif;
+        font-size:.86rem;font-weight:800;margin:.42rem 0 .18rem;color:#182230;
+        border-bottom:0;padding:.3rem 0 .25rem;display:flex;align-items:center;gap:.35rem
     }
+    .panel-title:before{content:"";width:.42rem;height:.42rem;border-radius:99px;background:#14B8A6;display:inline-block}
     div[data-testid="stMarkdownContainer"]:has(.panel-title){margin-bottom:-.15rem}
     .result-card{
-        width:100%;box-sizing:border-box;min-height:5.75rem;height:auto;
-        overflow:visible;font-size:.88rem;line-height:1.5;padding:.75rem .85rem;
-        margin-bottom:.65rem;background:#ffffff;border:1px solid #f0f0f2;border-radius:2px;
-        box-shadow:0 4px 18px rgba(0,0,0,.05);color:#1d1d1f
+        width:100%;box-sizing:border-box;min-height:6.25rem;height:auto;
+        overflow:visible;font-size:.88rem;line-height:1.55;padding:.85rem .9rem;
+        margin-bottom:.7rem;background:#ffffff;border:1px solid #E3E8EF;border-radius:8px;
+        box-shadow:0 10px 24px rgba(16,24,40,.055);color:#182230
     }
-    .change-alert-card{border:2px solid #ff3b30}
+    .change-alert-card{border:2px solid #EF4444;box-shadow:0 0 0 3px rgba(239,68,68,.1),0 10px 24px rgba(16,24,40,.055)}
     [data-testid="stTextArea"] textarea::placeholder,
-    .placeholder-card{color:#86868b}
+    .placeholder-card{color:#98A2B3}
     .approval-actions{margin-top:0}
     .term-card{
-        width:100%;box-sizing:border-box;height:5.75rem;overflow:hidden;
-        background:#ffffff;border:1px solid #f0f0f2;border-radius:18px;
-        padding:.85rem;margin-bottom:.65rem;box-shadow:0 4px 18px rgba(0,0,0,.05);
-        min-height:0;font-size:.88rem;line-height:1.5
+        width:100%;box-sizing:border-box;height:5.9rem;overflow:hidden;
+        background:#ffffff;border:1px solid #E3E8EF;border-radius:8px;
+        padding:.85rem;margin-bottom:.7rem;box-shadow:0 10px 24px rgba(16,24,40,.055);
+        min-height:0;font-size:.88rem;line-height:1.5;color:#182230
     }
     .rec-card{height:5.75rem;margin-bottom:.65rem;overflow:hidden}
     div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stCheckbox"]){
@@ -2389,26 +2406,32 @@ def css() -> None:
         transform:translateY(-2.05rem)
     }
     div[data-testid="stCheckbox"] label > div:first-child{margin:0}
-    .term-card b{font-size:.94rem;color:#1d1d1f}.term-card small{color:#86868b;font-size:.78rem}
-    .rec-name{font-size:.94rem;font-weight:700;color:#1d1d1f;margin:0 0 .25rem}
+    .term-card b{font-size:.94rem;color:#182230}.term-card small{color:#667085;font-size:.78rem}
+    .rec-name{font-size:.94rem;font-weight:800;color:#182230;margin:0 0 .25rem}
     .rec-reason{
-        font-size:.88rem;line-height:1.5;color:#1d1d1f;
+        font-size:.88rem;line-height:1.5;color:#344054;
         white-space:nowrap;overflow:hidden;text-overflow:ellipsis
     }
-    .rec-score{font-size:.78rem;color:#86868b;margin-top:.25rem}
+    .rec-score{font-size:.78rem;color:#667085;margin-top:.25rem}
     .empty-card{
-        background:#ffffff;border:1px solid #f0f0f2;border-radius:18px;
-        padding:.85rem;color:#6e6e73;font-size:.88rem
+        background:#ffffff;border:1px solid #E3E8EF;border-radius:8px;
+        padding:.85rem;color:#667085;font-size:.88rem
     }
     .result-box{
-        background:#ffffff;border:1px solid #f0f0f2;border-radius:18px;
-        padding:.85rem;margin-bottom:.65rem;box-shadow:0 4px 18px rgba(0,0,0,.05);
-        min-height:4.6rem;font-size:.88rem;line-height:1.5;color:#1d1d1f
+        background:#ffffff;border:1px solid #E3E8EF;border-radius:8px;
+        padding:.85rem;margin-bottom:.7rem;box-shadow:0 10px 24px rgba(16,24,40,.055);
+        min-height:4.6rem;font-size:.88rem;line-height:1.5;color:#182230
     }
     .agent-log{
-        background:#1d1d1f;color:#f5f5f7;border:1px solid #1d1d1f;border-radius:18px;
-        padding:.75rem;font-family:"Times New Roman","Malgun Gothic",Times,serif;font-size:.74rem;
+        background:#101828;color:#E4E7EC;border:1px solid #1D2939;border-radius:8px;
+        padding:.85rem;font-family:"Cascadia Mono","Consolas","Malgun Gothic",monospace;font-size:.73rem;
         max-height:520px;overflow-y:auto;white-space:pre-wrap
+    }
+    .agent-log::-webkit-scrollbar{width:8px}
+    .agent-log::-webkit-scrollbar-thumb{background:#344054;border-radius:999px}
+    @media (max-width: 900px){
+        .dash-topbar{display:block}
+        .dash-status-row{justify-content:flex-start;margin-top:.8rem}
     }
     </style>
     """, unsafe_allow_html=True)
@@ -2644,10 +2667,15 @@ def render_app() -> None:
             <div class="dash-brand">
                 {brand_markup}
                 <div>
-                    <div class="dash-kicker">DATA ARCHITECTURE STANDARD HUB</div>
+                    <div class="dash-kicker">Data Architecture Standard Hub</div>
                     <div class="dash-heading">표준용어 관리 Agent Workspace</div>
                     <div class="dash-subtitle">조회, 추천, 검증, 변경 결과를 한 화면에서 추적하는 운영형 데이터 표준 허브</div>
                 </div>
+            </div>
+            <div class="dash-status-row">
+                <span class="dash-chip dash-chip-strong">Agent Ready</span>
+                <span class="dash-chip">RDB + Vector DB</span>
+                <span class="dash-chip">HITL 검증</span>
             </div>
         </div>
         """,
@@ -2757,7 +2785,7 @@ def run_cli(args: list[str]) -> int:
         for key in DOC_FILES:
             print(f"\n--- {runtime.documents.title(key)} ---")
             print(runtime.documents.summary(key, max_lines=12))
-        print("\n실행 방법: streamlit run 05.17_pimono_v13.py")
+        print("\n실행 방법: streamlit run 05.17_pimono_v14.py")
         return 0
 
     prompt = " ".join(args).strip() or "작업이 시작된 일시"
@@ -2767,7 +2795,7 @@ def run_cli(args: list[str]) -> int:
     print("\n--- SSE ---")
     for line in stream.sse():
         print(line)
-    print("\n실행 방법: streamlit run 05.17_pimono_v13.py")
+    print("\n실행 방법: streamlit run 05.17_pimono_v14.py")
     return 0
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# DAsh: Pi Agent Super Agent + Python tool backend prototype v12.
+# DAsh: Pi Agent Super Agent + Python tool backend prototype v16.
 #
 # Node 런너에서 @earendil-works/pi-agent-core / @earendil-works/pi-ai를 실제 import합니다.
 # - 내부 대화는 AgentMessage로 유지하고 LLM 호출 경계에서만 provider message로 변환합니다.
@@ -9,13 +9,13 @@ from __future__ import annotations
 # - subagent2는 validate_agent를 별도 LangGraph로 실행합니다.
 # - Mock RDB/표준용어 Vector DB/문의답변 Vector DB로 바로 실행되며, .env 설정으로 Oracle/FAISS/OpenAI 교체 지점을 둡니다.
 # - agents/prd/trd/skill 문서를 런타임에 로드해 코드와 명세를 함께 확인합니다.
-# - v12는 실제 PostgreSQL RDB(postgres)와 pgvector DB(pgvector_test)를 기본 저장소로 사용합니다.
+# - v16는 실제 PostgreSQL RDB(postgres)와 pgvector DB(pgvector_test)를 기본 저장소로 사용합니다.
 #
 # 실행 방법:
 #     npm install @earendil-works/pi-agent-core @earendil-works/pi-ai
-#     streamlit run 05.17_pimono_v13.py
-#     python 05.17_pimono_v13.py "표준용어 등록 절차가 뭐야?"
-#     python 05.17_pimono_v13.py --docs
+#     streamlit run 05.18_pimono_v16.py
+#     python 05.18_pimono_v16.py "표준용어 등록 절차가 뭐야?"
+#     python 05.18_pimono_v16.py --docs
 
 import hashlib
 import base64
@@ -92,6 +92,7 @@ except Exception:  # pragma: no cover
 BASE_DIR = Path(__file__).resolve().parent
 SIMILARITY_TOP_K = 3
 SIMILARITY_THRESHOLD = 0.5
+QNA_HISTORY_THRESHOLD = 0.5
 QA_RETRIEVAL_TOP_K = 8
 QA_FINAL_TOP_K = 3
 DASH_LOGO_PATH = BASE_DIR / "assets" / "dash_logo.png"
@@ -194,6 +195,22 @@ class SimilarAnswerDocument(BaseModel):
     rerank_score: float
 
 
+class QnaHistoryDocument(BaseModel):
+    """사용자 문의와 LLM 답변을 저장하는 QnA 히스토리 문서입니다."""
+
+    doc_id: str
+    question: str
+    answer: str
+    created_at: str
+
+
+class SimilarQnaHistory(BaseModel):
+    """QnA 히스토리 Vector DB 검색 결과입니다."""
+
+    document: QnaHistoryDocument
+    similarity: float
+
+
 class RagAnswer(BaseModel):
     """문의 답변 RAG 파이프라인의 최종 산출물입니다."""
 
@@ -239,6 +256,9 @@ class AgentTurnState(BaseModel):
     router_decision: RouterDecision | None = None
     similar_terms: list[SimilarTerm] = Field(default_factory=list)
     qa_results: list[SimilarAnswerDocument] = Field(default_factory=list)
+    qna_hist_results: list[SimilarQnaHistory] = Field(default_factory=list)
+    qna_detail_available: bool = False
+    qna_original_question: str = ""
     rag_answer: RagAnswer | None = None
     standard_words: list[StandardWord] = Field(default_factory=list)
     recommendations: list[Recommendation] = Field(default_factory=list)
@@ -802,6 +822,13 @@ class AnswerVectorRepository(Protocol):
     def upsert(self, document: AnswerDocument) -> None: ...
 
 
+class QnaHistoryVectorRepository(Protocol):
+    """사용자 문의/LLM 답변 히스토리 Vector DB 접근 인터페이스입니다."""
+
+    def search(self, question: str, top_k: int = 3) -> list[SimilarQnaHistory]: ...
+    def upsert(self, question: str, answer: str) -> QnaHistoryDocument: ...
+
+
 class MockAnswerVectorRepository:
     """표준용어 Vector DB와 분리된 문의 답변 전용 메모리 Vector DB입니다."""
 
@@ -855,6 +882,31 @@ class MockAnswerVectorRepository:
 
 class FaissAnswerVectorRepository(MockAnswerVectorRepository):
     """문의 답변 전용 FAISS 교체 지점입니다. 현재는 실행성을 위해 Mock 구현을 상속합니다."""
+
+
+class MockQnaHistoryVectorRepository:
+    """문의/답변 히스토리를 저장하는 메모리 Vector DB입니다."""
+
+    def __init__(self, embedder: EmbeddingService) -> None:
+        self.embedder = embedder
+        self.rows: dict[str, tuple[QnaHistoryDocument, list[float]]] = {}
+
+    def search(self, question: str, top_k: int = 3) -> list[SimilarQnaHistory]:
+        query = self.embedder.embed(question)
+        ranked = [SimilarQnaHistory(document=document, similarity=cosine(query, vector)) for document, vector in self.rows.values()]
+        ranked.sort(key=lambda x: x.similarity, reverse=True)
+        return ranked[:top_k]
+
+    def upsert(self, question: str, answer: str) -> QnaHistoryDocument:
+        doc_id = hashlib.sha1(question.strip().lower().encode("utf-8")).hexdigest()
+        document = QnaHistoryDocument(
+            doc_id=doc_id,
+            question=question,
+            answer=answer,
+            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+        self.rows[doc_id] = (document, self.embedder.embed(question))
+        return document
 
 
 class PgVectorTermRepository:
@@ -1091,6 +1143,101 @@ class PgVectorAnswerRepository:
         return item
 
 
+class PgVectorQnaHistoryRepository:
+    """실제 pgvector DB(pgvector_test)의 사용자 문의/LLM 답변 히스토리 저장소입니다."""
+
+    def __init__(self, config: AppConfig, embedder: EmbeddingService) -> None:
+        self.config = config
+        self.embedder = embedder
+        self.client = PsqlClient(config, config.postgres_vector_database)
+        self.ensure_schema()
+
+    def ensure_schema(self) -> None:
+        self._drop_if_dimension_changed("qna_hist_vectors")
+        self.client.execute(
+            f"""
+            CREATE EXTENSION IF NOT EXISTS vector;
+            CREATE TABLE IF NOT EXISTS qna_hist_vectors (
+                doc_id TEXT PRIMARY KEY,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                embedding vector({self.config.vector_dimensions}) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+
+    def _drop_if_dimension_changed(self, table_name: str) -> None:
+        rows = self.client.query_json(
+            """
+            SELECT format_type(a.atttypid, a.atttypmod) AS column_type
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relname = {table_name}
+              AND a.attname = 'embedding'
+              AND NOT a.attisdropped
+            """.format(table_name=sql_literal(table_name))
+        )
+        expected = f"vector({self.config.vector_dimensions})"
+        if rows and str(rows[0]["column_type"]) != expected:
+            self.client.execute(f"DROP TABLE IF EXISTS {table_name};")
+
+    def search(self, question: str, top_k: int = 3) -> list[SimilarQnaHistory]:
+        query_vector = self.embedder.embed(question)
+        rows = self.client.query_json(
+            """
+            SELECT doc_id,
+                   question,
+                   answer,
+                   created_at::text AS created_at,
+                   1 - (embedding <=> {query_vector}) AS similarity
+            FROM qna_hist_vectors
+            ORDER BY embedding <=> {query_vector}
+            LIMIT {limit}
+            """.format(query_vector=vector_literal(query_vector), limit=top_k)
+        )
+        return [
+            SimilarQnaHistory(
+                document=QnaHistoryDocument(
+                    doc_id=str(row["doc_id"]),
+                    question=str(row["question"]),
+                    answer=str(row["answer"]),
+                    created_at=str(row.get("created_at") or datetime.now(timezone.utc).isoformat(timespec="seconds")),
+                ),
+                similarity=float(row["similarity"] or 0.0),
+            )
+            for row in rows
+        ]
+
+    def upsert(self, question: str, answer: str) -> QnaHistoryDocument:
+        doc_id = hashlib.sha1(question.strip().lower().encode("utf-8")).hexdigest()
+        embedding = self.embedder.embed(question)
+        self.client.execute(
+            """
+            INSERT INTO qna_hist_vectors(doc_id, question, answer, embedding, created_at, updated_at)
+            VALUES ({doc_id}, {question}, {answer}, {embedding}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (doc_id) DO UPDATE
+            SET answer=EXCLUDED.answer,
+                embedding=EXCLUDED.embedding,
+                updated_at=CURRENT_TIMESTAMP;
+            """.format(
+                doc_id=sql_literal(doc_id),
+                question=sql_literal(question),
+                answer=sql_literal(answer),
+                embedding=vector_literal(embedding),
+            )
+        )
+        return QnaHistoryDocument(
+            doc_id=doc_id,
+            question=question,
+            answer=answer,
+            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+
+
 @dataclass(frozen=True)
 class AgentTool:
     """Pi-mono AgentTool과 유사한 tool 정의입니다."""
@@ -1108,6 +1255,7 @@ class ToolBox:
     term_repository: TermRepository
     vector_repository: VectorRepository
     answer_vector_repository: AnswerVectorRepository
+    qna_history_repository: QnaHistoryVectorRepository
     config: AppConfig
     tools: dict[str, AgentTool] = field(init=False)
     llm_client: Any = field(init=False, default=None)
@@ -1118,6 +1266,8 @@ class ToolBox:
         self.tools = {
             "search_similar_terms": AgentTool("search_similar_terms", "Vector DB 유사 용어 조회", self.search_similar_terms),
             "search_answer_documents": AgentTool("search_answer_documents", "문의답변 Vector DB RAG 조회", self.search_answer_documents),
+            "search_qna_history": AgentTool("search_qna_history", "문의/답변 히스토리 Vector DB 조회", self.search_qna_history),
+            "save_qna_history": AgentTool("save_qna_history", "문의/답변 히스토리 Vector DB 저장", self.save_qna_history, "sequential"),
             "answer_question": AgentTool("answer_question", "RAG 조회결과 기반 LLM 답변 생성", self.answer_question, "sequential"),
             "list_standard_words": AgentTool("list_standard_words", "RDB 표준단어 조회", self.list_standard_words),
             "change_standard_term": AgentTool("change_standard_term", "RDB/Vector DB 변경", self.change_standard_term, "sequential"),
@@ -1133,6 +1283,16 @@ class ToolBox:
         """문의답변 전용 Vector DB에서 RAG context를 조회합니다."""
 
         return self.answer_vector_repository.search(question)
+
+    def search_qna_history(self, question: str) -> list[SimilarQnaHistory]:
+        """이전 사용자 문의/LLM 답변 히스토리를 Vector DB에서 조회합니다."""
+
+        return self.qna_history_repository.search(question)
+
+    def save_qna_history(self, question: str, answer: str) -> QnaHistoryDocument:
+        """LLM 상세 답변 결과를 QnA 히스토리 Vector DB에 저장합니다."""
+
+        return self.qna_history_repository.upsert(question, answer)
 
     def answer_question(self, question: str, contexts: list[SimilarAnswerDocument]) -> RagAnswer:
         """RAG context를 근거로 LLM을 거쳐 사용자 문의 답변을 생성합니다."""
@@ -1301,7 +1461,7 @@ class RouterSkill:
 
         entities = extract_entities(value)
         normalized = value.strip()
-        if normalized.startswith(("문의:", "질문:")):
+        if normalized.startswith(("문의:", "질문:", "상세조회:")):
             return RouterDecision(intent=Intent.DA_REQUEST, confidence=0.88, rationale="문의 접두어", entities=entities)
         if any(k in value for k in ["삭제", "제거"]):
             return RouterDecision(intent=Intent.TERM_DELETE, confidence=0.9, rationale="삭제 지시어", entities=entities)
@@ -1539,14 +1699,35 @@ class SubAgent1:
 
         try:
             if state.router_decision and state.router_decision.intent == Intent.DA_REQUEST:
-                state.qa_results = self.tools.tools["search_answer_documents"].execute(state.user_input)
-                state.rag_answer = self.tools.tools["answer_question"].execute(state.user_input, state.qa_results)
+                force_detail = state.user_input.startswith("상세조회:")
+                question = state.user_input.removeprefix("상세조회:").strip() if force_detail else state.user_input
+                state.qna_original_question = question
+                if not force_detail:
+                    state.qna_hist_results = self.tools.tools["search_qna_history"].execute(question)
+                    best_history = state.qna_hist_results[0] if state.qna_hist_results else None
+                    if best_history and best_history.similarity >= QNA_HISTORY_THRESHOLD:
+                        state.final_answer = best_history.document.answer
+                        state.qna_detail_available = True
+                        state.logs.append(
+                            event(
+                                "tool_execution_end",
+                                "select_agent",
+                                "QnA 히스토리 Vector DB 조회 완료",
+                                count=len(state.qna_hist_results),
+                                top_similarity=best_history.similarity,
+                                threshold=QNA_HISTORY_THRESHOLD,
+                            )
+                        )
+                        return state
+                state.qa_results = self.tools.tools["search_answer_documents"].execute(question)
+                state.rag_answer = self.tools.tools["answer_question"].execute(question, state.qa_results)
                 state.final_answer = state.rag_answer.answer
+                self.tools.tools["save_qna_history"].execute(question, state.final_answer)
                 state.logs.append(
                     event(
                         "tool_execution_end",
                         "select_agent",
-                        "문의답변 RAG 조회 및 LLM 답변 완료",
+                        "문의답변 RAG 조회, LLM 답변, QnA 히스토리 저장 완료",
                         count=len(state.qa_results),
                         strategy=state.rag_answer.strategy,
                     )
@@ -1761,7 +1942,7 @@ class PiMonoNodeBridge:
         try:
             with urllib.request.urlopen(f"{self.config.pimono_server_url}/health", timeout=2) as response:
                 body = json.loads(response.read().decode("utf-8"))
-                return response.status == 200 and body.get("version") == "v12"
+                return response.status == 200 and body.get("version") == "v16"
         except (OSError, urllib.error.URLError):
             return False
 
@@ -1988,7 +2169,7 @@ const runAgent = async (input) => {
 const server = http.createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/health") {
-      sendJson(response, 200, { ok: true, role: "pi_super_agent", version: "v12" });
+      sendJson(response, 200, { ok: true, role: "pi_super_agent", version: "v16" });
       return;
     }
     if (request.method === "POST" && request.url === "/run") {
@@ -2098,7 +2279,7 @@ PiMonoSuperAgent.run = _run_with_real_pimono  # type: ignore[method-assign]
 
 @dataclass(frozen=True)
 class ProjectDocuments:
-    """v12 프로젝트 명세 문서 묶음입니다."""
+    """v16 프로젝트 명세 문서 묶음입니다."""
 
     contents: dict[str, str]
 
@@ -2185,7 +2366,7 @@ class ProjectDocuments:
             ),
             (
                 "문의 답변 RAG 처리 절차",
-                "v12는 실제 PostgreSQL RDB와 pgvector DB를 사용하며, 표준용어 설명 검색 Vector DB와 문의답변 Vector DB를 분리합니다. 조회/문의 버튼을 누르면 사용자 입력 의도에 따라 표준용어 Vector DB 조회 또는 문의답변 RAG+LLM 답변을 자동 수행합니다.",
+                "v16는 실제 PostgreSQL RDB와 pgvector DB를 사용하며, 표준용어 설명 검색 Vector DB와 문의답변 Vector DB, 문의/답변 히스토리 Vector DB를 분리합니다. 문의 시 qna_hist_vectors를 먼저 조회하고 필요할 때만 RAG+LLM 상세 답변을 수행합니다.",
                 "faq",
                 ["RAG", "문의", "조회", "앙상블", "재랭킹", "LLM"],
             ),
@@ -2204,6 +2385,7 @@ class Runtime:
     repo: TermRepository
     vector: VectorRepository
     answer_vector: AnswerVectorRepository
+    qna_history_vector: QnaHistoryVectorRepository
     super_agent: PiMonoSuperAgent
     documents: ProjectDocuments
 
@@ -2218,14 +2400,16 @@ def build_runtime() -> Runtime:
         repo: TermRepository = MockTermRepository()
         vector: VectorRepository = MockVectorRepository(repo, embedder)
         answer_vector: AnswerVectorRepository = MockAnswerVectorRepository(documents.answer_documents(), embedder)
+        qna_history_vector: QnaHistoryVectorRepository = MockQnaHistoryVectorRepository(embedder)
     else:
         embedder = OpenAIEmbeddingService(config)
         repo = PostgresTermRepository(config)
         vector = PgVectorTermRepository(config, repo, embedder)
         answer_vector = PgVectorAnswerRepository(config, documents.answer_documents(), embedder)
-    tools = ToolBox(repo, vector, answer_vector, config)
+        qna_history_vector = PgVectorQnaHistoryRepository(config, embedder)
+    tools = ToolBox(repo, vector, answer_vector, qna_history_vector, config)
     llm = LlmBoundary(config)
-    runtime = Runtime(config, repo, vector, answer_vector, PiMonoSuperAgent(SubAgent1(tools), llm, config), documents)
+    runtime = Runtime(config, repo, vector, answer_vector, qna_history_vector, PiMonoSuperAgent(SubAgent1(tools), llm, config), documents)
     ensure_python_tool_server(runtime)
     return runtime
 
@@ -2240,6 +2424,9 @@ def init_ui() -> None:
     st.session_state.setdefault("answer", "")
     st.session_state.setdefault("lookup_answer", "")
     st.session_state.setdefault("qa_results", [])
+    st.session_state.setdefault("qna_hist_results", [])
+    st.session_state.setdefault("qna_detail_available", False)
+    st.session_state.setdefault("last_qna_question", "")
     st.session_state.setdefault("similar", [])
     st.session_state.setdefault("recs", [])
     st.session_state.setdefault("selected_rec_idx", None)
@@ -2335,7 +2522,7 @@ def css() -> None:
     }
     .dash-kicker{
         color:#2563eb;font-size:.72rem;font-weight:800;line-height:1.1;
-        letter-spacing:.08em;text-transform:uppercase;margin:0 0 .18rem
+        letter-spacing:.08em;margin:0 0 .18rem
     }
     .dash-heading{
         color:#111827;font-size:1.22rem;font-weight:800;line-height:1.25;margin:0
@@ -2352,7 +2539,11 @@ def css() -> None:
     .panel-title{
         font-family:"Times New Roman","Malgun Gothic",Times,serif;
         font-size:1rem;font-weight:700;margin:.35rem 0 .05rem;color:#1d1d1f;
-        border-bottom:0;padding-bottom:0
+        border-bottom:0;padding-bottom:0;display:flex;align-items:center;gap:.32rem
+    }
+    .panel-title::before{
+        content:"";width:.26rem;height:.26rem;border-radius:50%;
+        background:#0B1F4D;display:block;flex:0 0 .26rem
     }
     div[data-testid="stMarkdownContainer"]:has(.panel-title){margin-bottom:-.15rem}
     .result-card{
@@ -2434,12 +2625,15 @@ def execute_prompt(runtime: Runtime, prompt: str) -> AgentTurnState:
     st.session_state["answer"] = result.final_answer
     st.session_state["similar"] = result.similar_terms
     st.session_state["qa_results"] = result.qa_results
+    st.session_state["qna_hist_results"] = result.qna_hist_results
+    st.session_state["qna_detail_available"] = result.qna_detail_available
     st.session_state["recs"] = result.recommendations
     st.session_state["events"] = stream.sse()
     if result.router_decision and result.router_decision.intent == Intent.DA_REQUEST:
         st.session_state["lookup_mode"] = "qa"
         st.session_state["lookup_requested"] = False
         st.session_state["lookup_answer"] = result.final_answer
+        st.session_state["last_qna_question"] = result.qna_original_question or prompt.removeprefix("상세조회:").strip()
         st.session_state["similar"] = []
     if result.router_decision and result.router_decision.intent == Intent.MEANING_SELECT and not result.router_decision.needs_clarification:
         st.session_state["lookup_mode"] = "term"
@@ -2450,6 +2644,8 @@ def execute_prompt(runtime: Runtime, prompt: str) -> AgentTurnState:
             else "유사도 0.6 이상인 기존 표준용어를 찾지 못했습니다."
         )
         st.session_state["qa_results"] = []
+        st.session_state["qna_hist_results"] = []
+        st.session_state["qna_detail_available"] = False
         st.session_state["last_description"] = prompt
     if result.router_decision and result.router_decision.needs_clarification:
         st.session_state["lookup_mode"] = "clarification"
@@ -2458,19 +2654,31 @@ def execute_prompt(runtime: Runtime, prompt: str) -> AgentTurnState:
     return result
 
 
-def render_lookup_result() -> None:
+def render_lookup_result(runtime: Runtime) -> None:
     """조회/문의 결과를 입력 의도에 맞춰 표시합니다."""
 
-    st.markdown('<div class="panel-title">&nbsp;&nbsp;[ 조회/문의 결과 ]</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">[ 조회/문의 결과 ]</div>', unsafe_allow_html=True)
     if st.session_state["lookup_mode"] == "qa":
         if st.session_state["lookup_answer"]:
             st.markdown(f'<div class="result-card">{st.session_state["lookup_answer"]}</div>', unsafe_allow_html=True)
-        results = cast(list[SimilarAnswerDocument], st.session_state["qa_results"])
-        for item in results:
-            st.markdown(
-                f'<div class="term-card"><b>{item.document.title}</b><br><small>{item.document.source} | vector={item.vector_score:.2f}, keyword={item.keyword_score:.2f}, rerank={item.rerank_score:.2f}</small></div>',
-                unsafe_allow_html=True,
-            )
+        history_results = cast(list[SimilarQnaHistory], st.session_state["qna_hist_results"])
+        if st.session_state["qna_detail_available"]:
+            for item in history_results[:1]:
+                st.markdown(
+                    f'<div class="term-card"><b>이전 유사 문의</b><br>{item.document.question}<br><small>qna_hist_vectors | similarity={item.similarity:.2f}</small></div>',
+                    unsafe_allow_html=True,
+                )
+            if st.button("상세 조회", use_container_width=True):
+                previous_answer = st.session_state["answer"]
+                previous_recs = st.session_state["recs"]
+                previous_selected_idx = st.session_state["selected_rec_idx"]
+                question = cast(str, st.session_state["last_qna_question"]).strip()
+                if question:
+                    execute_prompt(runtime, f"상세조회: {question}")
+                    st.session_state["answer"] = previous_answer
+                    st.session_state["recs"] = previous_recs
+                    st.session_state["selected_rec_idx"] = previous_selected_idx
+                    st.rerun()
         return
     if st.session_state["lookup_mode"] == "clarification" and st.session_state["lookup_answer"]:
         st.markdown(f'<div class="result-card">{st.session_state["lookup_answer"]}</div>', unsafe_allow_html=True)
@@ -2481,7 +2689,7 @@ def render_lookup_result() -> None:
             st.markdown(f'<div class="result-card">{st.session_state["lookup_answer"]}</div>', unsafe_allow_html=True)
             return
         st.markdown(
-            '<div class="result-card placeholder-card">조회/문의 버튼을 누르면<br>1)설명(의미) 기반으로 표준용어를 조회하거나,<br>2)RAG 기반으로 답변합니다.</div>',
+            '<div class="result-card placeholder-card">"조회/문의" 버튼을 누르면<br>1)설명(의미) 기반으로 표준용어를 조회하거나,<br>2)RAG 기반으로 답변합니다.</div>',
             unsafe_allow_html=True,
         )
         return
@@ -2495,10 +2703,10 @@ def render_lookup_result() -> None:
 def render_recommendations(runtime: Runtime) -> None:
     """추천 용어를 체크박스와 등록 버튼으로 표시합니다."""
 
-    st.markdown('<div class="panel-title">&nbsp;&nbsp;[ 추천 결과 ]</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">[ 추천 결과 ]</div>', unsafe_allow_html=True)
     recommendations = cast(list[Recommendation], st.session_state["recs"])
     if not recommendations:
-        st.markdown('<div class="result-card placeholder-card">추천 버튼을 누르면 표준단어 조합 후보가 표시됩니다.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="result-card placeholder-card">"추천" 버튼을 누르면 사용자가 입력한 설명 정보와 표준단어 논리명을 조합해서 용어를 추천합니다.</div>', unsafe_allow_html=True)
         return
 
     def update_selected_recommendation(index: int, count: int) -> None:
@@ -2543,6 +2751,9 @@ def render_recommendations(runtime: Runtime) -> None:
             previous_lookup_requested = st.session_state["lookup_requested"]
             previous_similar = st.session_state["similar"]
             previous_qa_results = st.session_state["qa_results"]
+            previous_qna_hist_results = st.session_state["qna_hist_results"]
+            previous_qna_detail_available = st.session_state["qna_detail_available"]
+            previous_last_qna_question = st.session_state["last_qna_question"]
             previous_last_description = st.session_state["last_description"]
             result = execute_prompt(runtime, f"'{rec.logical_name}' 등록: {rec.description}")
             next_answer = previous_answer if result.awaiting_human_confirmation else result.final_answer
@@ -2554,6 +2765,9 @@ def render_recommendations(runtime: Runtime) -> None:
             st.session_state["lookup_requested"] = previous_lookup_requested
             st.session_state["similar"] = previous_similar
             st.session_state["qa_results"] = previous_qa_results
+            st.session_state["qna_hist_results"] = previous_qna_hist_results
+            st.session_state["qna_detail_available"] = previous_qna_detail_available
+            st.session_state["last_qna_question"] = previous_last_qna_question
             st.session_state["last_description"] = previous_last_description
             if result.awaiting_human_confirmation:
                 st.rerun()
@@ -2562,14 +2776,14 @@ def render_recommendations(runtime: Runtime) -> None:
 def render_change_result(runtime: Runtime) -> None:
     """등록/변경 결과를 변경 버튼 하단 영역에 표시합니다."""
 
-    st.markdown('<div class="panel-title">&nbsp;&nbsp;[ 등록/변경 결과 ]</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">[ 등록/변경 결과 ]</div>', unsafe_allow_html=True)
     change_answer = cast(str, st.session_state["answer"])
     change_card_class = "result-card" if change_answer else "result-card placeholder-card"
     if st.session_state.get("change_result_alert"):
         change_card_class += " change-alert-card"
     alert_version = cast(int, st.session_state["change_result_alert_version"])
     st.markdown(
-        f'<div id="change-result-card" class="{change_card_class}" data-alert-version="{alert_version}">{change_answer or "아직 등록 또는 변경 결과가 없습니다."}</div>',
+        f'<div id="change-result-card" class="{change_card_class}" data-alert-version="{alert_version}">{change_answer or "등록 또는 변경(수정, 삭제) 시 결과가 표시됩니다."}</div>',
         unsafe_allow_html=True,
     )
 
@@ -2586,6 +2800,9 @@ def render_human_approval_dialog(runtime: Runtime, request: ChangeRequest, valid
         previous_lookup_requested = st.session_state["lookup_requested"]
         previous_similar = st.session_state["similar"]
         previous_qa_results = st.session_state["qa_results"]
+        previous_qna_hist_results = st.session_state["qna_hist_results"]
+        previous_qna_detail_available = st.session_state["qna_detail_available"]
+        previous_last_qna_question = st.session_state["last_qna_question"]
         previous_last_description = st.session_state["last_description"]
         previous_answer = st.session_state["answer"]
         result = execute_prompt(runtime, decision)
@@ -2597,6 +2814,9 @@ def render_human_approval_dialog(runtime: Runtime, request: ChangeRequest, valid
         st.session_state["lookup_requested"] = previous_lookup_requested
         st.session_state["similar"] = previous_similar
         st.session_state["qa_results"] = previous_qa_results
+        st.session_state["qna_hist_results"] = previous_qna_hist_results
+        st.session_state["qna_detail_available"] = previous_qna_detail_available
+        st.session_state["last_qna_question"] = previous_last_qna_question
         st.session_state["last_description"] = previous_last_description
         st.rerun()
 
@@ -2644,24 +2864,24 @@ def render_app() -> None:
             <div class="dash-brand">
                 {brand_markup}
                 <div>
-                    <div class="dash-kicker">DATA ARCHITECTURE STANDARD HUB</div>
-                    <div class="dash-heading">표준용어 관리 Agent Workspace</div>
-                    <div class="dash-subtitle">조회, 추천, 검증, 변경 결과를 한 화면에서 추적하는 운영형 데이터 표준 허브</div>
+                    <div class="dash-kicker">Data Architecture Standard Hub</div>
+                    <div class="dash-heading">표준용어 관리 Agent</div>
+                    <div class="dash-subtitle">조회, 문의, 추천, 변경을 관리하는 데이터 표준 허브</div>
                 </div>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="dash-lead">Data Architecture Standard Hub / 데이터 모델에서 사용되는 표준용어 관리 Agent<br>목표1: 표준용어 재사용율을 높인다. / 목표2: 추천 용어 등록율을 높인다.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="dash-lead">목표1: 표준용어 재사용율을 높인다.&nbsp; | &nbsp;목표2: 문의 답변 시 LLM 사용을 최소화한다.&nbsp; | &nbsp;목표3: 추천 용어 등록율을 높인다.</div>', unsafe_allow_html=True)
 
     work_area, log_area = st.columns([3.8, 1.21], gap="large")
     with work_area:
-        st.markdown('<div class="panel-title">&nbsp;&nbsp;[ 사용자 입력 ]</div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">[ 사용자 입력 ]</div>', unsafe_allow_html=True)
         user_text = st.text_area(
             "입력",
             height=150,
-            placeholder="ex 1) 작업이 시작된 일시 (용어 조회/추천을 위한 설명)\nex 2) 표준용어 등록 절차가 뭐야?\nex 3) '작업시작일시'의 설명을 '작업이 시작된 일시'로 수정\nex 4) '작업시작일시' 삭제",
+            placeholder="ex 1) 작업이 시작된 일시 (용어 조회/추천을 위한 설명)\nex 2) 표준용어 등록 절차가 뭐야? (문의)\nex 3) '작업시작일시'의 설명을 '작업이 시작된 일시'로 수정 (변경)\nex 4) '작업시작일시' 삭제 (변경)",
             label_visibility="collapsed",
         )
         lookup_col, recommend_col, change_col = st.columns([1, 1, 1], gap="small")
@@ -2686,6 +2906,9 @@ def render_app() -> None:
                 previous_lookup_requested = st.session_state["lookup_requested"]
                 previous_similar = st.session_state["similar"]
                 previous_qa_results = st.session_state["qa_results"]
+                previous_qna_hist_results = st.session_state["qna_hist_results"]
+                previous_qna_detail_available = st.session_state["qna_detail_available"]
+                previous_last_qna_question = st.session_state["last_qna_question"]
                 previous_last_description = st.session_state["last_description"]
                 result = execute_prompt(runtime, prompt)
                 st.session_state["selected_rec_idx"] = None
@@ -2695,6 +2918,9 @@ def render_app() -> None:
                 st.session_state["lookup_requested"] = previous_lookup_requested
                 st.session_state["similar"] = previous_similar
                 st.session_state["qa_results"] = previous_qa_results
+                st.session_state["qna_hist_results"] = previous_qna_hist_results
+                st.session_state["qna_detail_available"] = previous_qna_detail_available
+                st.session_state["last_qna_question"] = previous_last_qna_question
                 st.session_state["last_description"] = previous_last_description
         with change_col:
             change_disabled = not has_change_keyword_outside_quotes(user_text)
@@ -2708,14 +2934,14 @@ def render_app() -> None:
 
         lookup_result_col, recommend_result_col, change_result_col = st.columns([1, 1, 1], gap="small")
         with lookup_result_col:
-            render_lookup_result()
+            render_lookup_result(runtime)
         with recommend_result_col:
             render_recommendations(runtime)
         with change_result_col:
             render_change_result(runtime)
 
     with log_area:
-        st.markdown('<div class="panel-title">&nbsp;&nbsp;[ Agent 처리 로그 ]</div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">[ Agent 처리 로그 ]</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div id="agent-log-scroll" class="agent-log">{"<br><br>".join(cast(list[str], st.session_state["events"])) or "SSE 이벤트가 여기에 표시됩니다."}</div>',
             unsafe_allow_html=True,
@@ -2757,7 +2983,7 @@ def run_cli(args: list[str]) -> int:
         for key in DOC_FILES:
             print(f"\n--- {runtime.documents.title(key)} ---")
             print(runtime.documents.summary(key, max_lines=12))
-        print("\n실행 방법: streamlit run 05.17_pimono_v13.py")
+        print("\n실행 방법: streamlit run 05.18_pimono_v16.py")
         return 0
 
     prompt = " ".join(args).strip() or "작업이 시작된 일시"
@@ -2767,7 +2993,7 @@ def run_cli(args: list[str]) -> int:
     print("\n--- SSE ---")
     for line in stream.sse():
         print(line)
-    print("\n실행 방법: streamlit run 05.17_pimono_v13.py")
+    print("\n실행 방법: streamlit run 05.18_pimono_v16.py")
     return 0
 
 
